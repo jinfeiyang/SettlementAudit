@@ -1,9 +1,16 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import BasicLayout from '@/layouts/BasicLayout.vue'
+import { TOKEN_KEY } from '@/api/request'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    {
+      path: '/login',
+      name: 'Login',
+      component: () => import('@/views/login/LoginView.vue'),
+      meta: { title: '登录', public: true },
+    },
     {
       path: '/',
       component: BasicLayout,
@@ -22,6 +29,12 @@ const router = createRouter({
           meta: { title: '项目管理', icon: 'Folder' },
         },
         {
+          path: 'projects/:id',
+          name: 'ProjectDetail',
+          component: () => import('@/views/project/ProjectDetailView.vue'),
+          meta: { title: '预审作业', hide: true },
+        },
+        {
           path: 'issues',
           name: 'Issues',
           component: () => import('@/views/issue/IssueReviewView.vue'),
@@ -33,9 +46,26 @@ const router = createRouter({
           component: () => import('@/views/report/ReportListView.vue'),
           meta: { title: '报告管理', icon: 'Document' },
         },
+        {
+          path: 'rules',
+          name: 'Rules',
+          component: () => import('@/views/rule/RuleLibraryView.vue'),
+          meta: { title: '规则库', icon: 'Collection' },
+        },
       ],
     },
   ],
+})
+
+router.beforeEach((to) => {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (!to.meta.public && !token) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  if (to.path === '/login' && token) {
+    return { path: '/dashboard' }
+  }
+  return true
 })
 
 export default router

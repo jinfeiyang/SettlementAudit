@@ -1,11 +1,13 @@
-# 骨架阶段基础依赖（Python 3.14 可安装）
+# AI/解析服务依赖（建议 Python 3.11）
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7
 pydantic-settings>=2.3
 httpx>=0.27
+# 文件上传表单必需：/parse/dxf、/parse/boq-excel 使用 UploadFile，缺失则服务启动即崩
+python-multipart>=0.0.9
 
-# W1~W2 接入的解析依赖（注意：本机 Python 3.14 若无对应 wheel 请改用 3.11）
-# ezdxf>=1.3        # DXF 矢量解析
-# shapely>=2.0      # 几何量算
-# python-docx / openpyxl>=3.1  # 清单 Excel 解析
+# 一期解析依赖：DXF 矢量解析与清单 Excel 解析
+ezdxf>=1.3
+openpyxl>=3.1
+# shapely>=2.0  # 二期几何量算增强（缓冲区/相交分析等）

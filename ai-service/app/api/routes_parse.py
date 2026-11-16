@@ -1,22 +1,39 @@
-"""解析路由：CAD(DWG/DXF) 解析与清单解析占位。
+"""解析路由：CAD(DWG/DXF) 矢量解析与清单 Excel 解析。
 
-一期路线：ODA File Converter(DWG->DXF) + ezdxf 解析 + shapely 量算，
-量算聚焦"线路长度、设备数量"两类（见 docs/03 开发计划 A1）。
+一期路线：ODA File Converter(DWG->DXF) + ezdxf 解析，量算聚焦「线路长度、设备数量」；
+Java 业务服务对解析失败做降级处理，不影响清单核查主链路。
 """
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
+
+from app.core.config import get_settings
+from app.services.boq_parser import parse_boq_bytes
+from app.services.dxf_parser import parse_dxf_bytes
 
 router = APIRouter(prefix="/parse", tags=["parse"])
 
 
 @router.post("/dxf")
 async def parse_dxf(file: UploadFile = File(...)):
-    """DXF 矢量解析占位：提取图层/块属性/标注，量算线路长度与设备数量。"""
-    # TODO(W1~W2): ODA 转换 + ezdxf 解析 + shapely 量算
-    return {"file": file.filename, "status": "NOT_IMPLEMENTED", "hint": "ezdxf 解析在 W1~W2 接入"}
+    """DXF/DWG 矢量解析：图层、块、标注提取与线缆长度/设备数量量算。"""
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    settings = get_settings()
+    result = await run_in_threadpool(
+        parse_dxf_bytes, data, file.filename or "drawing.dxf",
+        settings.dxf_sample_limit, settings.oda_converter_path,
+    )
+    result["file"] = file.filename
+    return result
 
 
 @router.post("/boq-excel")
 async def parse_boq_excel(file: UploadFile = File(...)):
-    """工程量清单 Excel 解析占位：输出清单行（含行号，用于回溯）。"""
-    # TODO(W1~W2): openpyxl/pandas 解析 + 清单标准化
-    return {"file": file.filename, "status": "NOT_IMPLEMENTED", "hint": "清单解析在 W1~W2 接入"}
+    """工程量清单 Excel 解析：输出清单行（含行号，用于回溯）与标准化建议。"""
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    result = await run_in_threadpool(parse_boq_bytes, data, file.filename or "boq.xlsx")
+    result["file"] = file.filename
+    return result

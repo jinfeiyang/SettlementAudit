@@ -21,6 +21,7 @@
     <java.version>17</java.version>
     <mybatis-plus.version>3.5.7</mybatis-plus.version>
     <knife4j.version>4.5.0</knife4j.version>
+    <poi.version>5.2.5</poi.version>
   </properties>
 
   <dependencies>
@@ -48,11 +49,24 @@
       <artifactId>mysql-connector-j</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- 本地免安装数据库（local profile）：无 MySQL 也可跑通主链路 -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
 
     <!-- 缓存与异步（骨架先引入，未配置可连不上不影响启动） -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+
+    <!-- 清单/规则 Excel 解析与疑点/报告导出 -->
+    <dependency>
+      <groupId>org.apache.poi</groupId>
+      <artifactId>poi-ooxml</artifactId>
+      <version>${poi.version}</version>
     </dependency>
 
     <!-- 接口文档 -->

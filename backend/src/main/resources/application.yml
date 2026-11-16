@@ -8,9 +8,9 @@ spring:
     name: preaudit-backend
   datasource:
     # 生产/测试环境由省公司统一提供 MySQL 实例，按连接串接入
-    url: jdbc:mysql://localhost:3306/cost_preaudit?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: root
+    url: ${DB_URL:jdbc:mysql://localhost:3306/cost_preaudit?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:root}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       minimum-idle: 2
@@ -18,11 +18,12 @@ spring:
   data:
     # 骨架阶段 Redis 可不启动（Lettuce 懒连接，不影响应用启动）
     redis:
-      host: localhost
-      port: 6379
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
   servlet:
     multipart:
       # 图纸/清单文件上传上限（DWG/DXF/Excel）
@@ -56,6 +57,27 @@ logging:
 preaudit:
   # AI/解析服务（独立 FastAPI 进程，见 ai-service/）
   ai-service:
-    base-url: http://localhost:8000
+    base-url: ${AI_SERVICE_URL:http://localhost:8000}
     connect-timeout-ms: 5000
     read-timeout-ms: 60000
+    enabled: true
+  storage:
+    # 图纸/清单原件存储根目录（容器云挂载 PVC）
+    root: ${STORAGE_ROOT:./data/uploads}
+  security:
+    # 一期基线：HMAC 签名令牌；接入 4A 后替换为用户态透传
+    token-secret: ${TOKEN_SECRET:preaudit-dev-secret-change-me}
+    token-ttl-hours: 12
+  web:
+    # 跨域来源（逗号分隔）；同域反代部署时留空
+    allowed-origins: ${ALLOWED_ORIGINS:http://localhost:*,http://127.0.0.1:*}
+  check:
+    # 定额语义召回入选阈值（0~1），低于该值仅给出候选并提示人工复核
+    semantic-hit-threshold: 0.55
+    # 取费金额偏差告警阈值（相对偏差）
+    fee-deviation-threshold: 0.05
+    fee-deviation-high-threshold: 0.15
+    # 清单合价一致性容差（元）
+    amount-tolerance: 1.00
+    # 是否调用 LLM 生成疑点归因（不可用时自动降级为规则文案）
+    llm-attribution-enabled: false

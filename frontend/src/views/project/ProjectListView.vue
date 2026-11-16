@@ -3,21 +3,242 @@
     <template #header>
       <div class="header-row">
         <span>预审项目管理</span>
-        <el-button type="primary" disabled>新建预审项目（A 模块开发中）</el-button>
+        <el-button type="primary" @click="openCreate">新建预审项目</el-button>
       </div>
     </template>
-    <el-table :data="[]" empty-text="骨架阶段：项目列表接口在 A4 开发接入">
-      <el-table-column prop="projectNo" label="项目编号" />
-      <el-table-column prop="projectName" label="项目名称" />
-      <el-table-column prop="engType" label="工程类型" />
-      <el-table-column prop="settleAmount" label="结算送审金额" />
-      <el-table-column prop="status" label="状态" />
+
+    <el-form :inline="true" class="filters">
+      <el-form-item label="关键字">
+        <el-input
+          v-model="query.keyword"
+          placeholder="项目名称 / 编号"
+          clearable
+          style="width: 220px"
+          @keyup.enter="reload"
+        />
+      </el-form-item>
+      <el-form-item label="状态">
+        <el-select v-model="query.status" placeholder="全部" clearable style="width: 140px">
+          <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="工程类型">
+        <el-select v-model="query.engType" placeholder="全部" clearable style="width: 140px">
+          <el-option label="通信线路" value="LINE" />
+          <el-option label="设备安装" value="DEVICE" />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="reload">查询</el-button>
+        <el-button @click="reset">重置</el-button>
+      </el-form-item>
+    </el-form>
+
+    <el-table v-loading="loading" :data="rows" empty-text="暂无项目，点击右上角新建">
+      <el-table-column prop="projectNo" label="项目编号" width="170" />
+      <el-table-column prop="projectName" label="项目名称" min-width="220" show-overflow-tooltip />
+      <el-table-column label="工程类型" width="110">
+        <template #default="{ row }">{{ row.engTypeName || '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="city" label="地市" width="100" />
+      <el-table-column label="结算送审金额（元）" width="170" align="right">
+        <template #default="{ row }">{{ money(row.settleAmount) }}</template>
+      </el-table-column>
+      <el-table-column label="状态" width="110">
+        <template #default="{ row }">
+          <el-tag :type="statusTag(row.status)" size="small">{{ row.statusName }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="创建时间" width="170">
+        <template #default="{ row }">{{ datetime(row.createTime) }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="180" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="router.push(`/projects/${row.id}`)">进入作业</el-button>
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="danger" @click="remove(row)">删除</el-button>
+        </template>
+      </el-table-column>
     </el-table>
+
+    <el-pagination
+      class="pager"
+      :current-page="query.page"
+      :page-size="query.size"
+      :total="total"
+      layout="total, sizes, prev, pager, next, jumper"
+      :page-sizes="[10, 20, 50]"
+      @current-change="onPageChange"
+      @size-change="onSizeChange"
+    />
   </el-card>
+
+  <el-dialog v-model="dialogVisible" :title="editing ? '编辑预审项目' : '新建预审项目'" width="560px">
+    <el-form ref="formRef" :model="form" :rules="rules" label-width="110px">
+      <el-form-item label="项目名称" prop="projectName">
+        <el-input v-model="form.projectName" placeholder="如：XX 市 XX 段光缆线路工程" />
+      </el-form-item>
+      <el-form-item label="项目编号">
+        <el-input v-model="form.projectNo" placeholder="留空自动生成" :disabled="editing" />
+      </el-form-item>
+      <el-form-item label="工程类型" prop="engType">
+        <el-radio-group v-model="form.engType">
+          <el-radio value="LINE">通信线路</el-radio>
+          <el-radio value="DEVICE">设备安装</el-radio>
+        </el-radio-group>
+      </el-form-item>
+      <el-form-item label="地市">
+        <el-input v-model="form.city" placeholder="如：杭州" />
+      </el-form-item>
+      <el-form-item label="结算送审金额">
+        <el-input-number v-model="form.settleAmount" :min="0" :step="1000" :precision="2" style="width: 220px" />
+        <span class="unit">元</span>
+      </el-form-item>
+      <el-form-item label="备注">
+        <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="选填" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="dialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
-// 项目管理（A4/A5）：列表 + 资料上传 + 解析状态跟踪
+import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { projectApi, type ProjectVO } from '@/api'
+import { datetime, money, statusTag } from '@/utils/format'
+
+const router = useRouter()
+const loading = ref(false)
+const saving = ref(false)
+const rows = ref<ProjectVO[]>([])
+const total = ref(0)
+const dialogVisible = ref(false)
+const editing = ref(false)
+const editingId = ref<number>()
+const formRef = ref<FormInstance>()
+
+const statusOptions = [
+  { value: 'DRAFT', label: '草稿' },
+  { value: 'IMPORTED', label: '已导入' },
+  { value: 'CHECKING', label: '核查中' },
+  { value: 'CHECKED', label: '已核查' },
+  { value: 'REPORTED', label: '已出报告' },
+  { value: 'ARCHIVED', label: '已归档' },
+]
+
+const query = reactive({ keyword: '', status: '', engType: '', page: 1, size: 10 })
+const form = reactive<any>({
+  projectName: '',
+  projectNo: '',
+  engType: 'LINE',
+  city: '',
+  settleAmount: undefined,
+  remark: '',
+})
+
+const rules: FormRules = {
+  projectName: [{ required: true, message: '请输入项目名称', trigger: 'blur' }],
+  engType: [{ required: true, message: '请选择工程类型', trigger: 'change' }],
+}
+
+async function reload() {
+  loading.value = true
+  try {
+    const res = await projectApi.page({ ...query })
+    rows.value = res.records
+    total.value = res.total
+  } finally {
+    loading.value = false
+  }
+}
+
+function reset() {
+  query.keyword = ''
+  query.status = ''
+  query.engType = ''
+  query.page = 1
+  reload()
+}
+
+function onPageChange(page: number) {
+  query.page = page
+  reload()
+}
+
+function onSizeChange(size: number) {
+  query.size = size
+  query.page = 1
+  reload()
+}
+
+function openCreate() {
+  editing.value = false
+  editingId.value = undefined
+  Object.assign(form, {
+    projectName: '',
+    projectNo: '',
+    engType: 'LINE',
+    city: '',
+    settleAmount: undefined,
+    remark: '',
+  })
+  dialogVisible.value = true
+}
+
+function openEdit(row: ProjectVO) {
+  editing.value = true
+  editingId.value = row.id
+  Object.assign(form, {
+    projectName: row.projectName,
+    projectNo: row.projectNo,
+    engType: row.engType || 'LINE',
+    city: row.city,
+    settleAmount: row.settleAmount,
+    remark: row.remark,
+  })
+  dialogVisible.value = true
+}
+
+async function save() {
+  const valid = await formRef.value?.validate().catch(() => false)
+  if (!valid) {
+    return
+  }
+  saving.value = true
+  try {
+    const payload = { ...form, settleAmount: form.settleAmount ?? null }
+    if (editing.value && editingId.value) {
+      await projectApi.update(editingId.value, payload)
+      ElMessage.success('已保存')
+    } else {
+      const created = await projectApi.create(payload)
+      ElMessage.success('项目已创建，可继续上传资料')
+      dialogVisible.value = false
+      router.push(`/projects/${created.id}`)
+      return
+    }
+    dialogVisible.value = false
+    reload()
+  } finally {
+    saving.value = false
+  }
+}
+
+async function remove(row: ProjectVO) {
+  await ElMessageBox.confirm(`确认删除项目「${row.projectName}」？清单、疑点与报告将一并删除。`, '删除确认', {
+    type: 'warning',
+  })
+  await projectApi.remove(row.id)
+  ElMessage.success('已删除')
+  reload()
+}
+
+onMounted(reload)
 </script>
 
 <style scoped>
@@ -25,5 +246,16 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.filters {
+  margin-bottom: 4px;
+}
+.pager {
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+.unit {
+  margin-left: 8px;
+  color: #909399;
 }
 </style>

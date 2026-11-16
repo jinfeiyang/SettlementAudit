@@ -1,0 +1,62 @@
+# 生产/测试环境（联通容器云「智创工坊-揭榜」租户）
+# 启用方式：SPRING_PROFILES_ACTIVE=prod；数据库/存储/AI 地址全部由平台环境变量注入
+spring:
+  sql:
+    init:
+      # 容器环境不自动建表：由 DBA/运维执行 db/schema.sql（手工或初始化 Job）
+      mode: never
+  datasource:
+    hikari:
+      # 单实例 + 省公司 MySQL 实例的连接上限（按实例规格确认）
+      minimum-idle: 5
+      maximum-pool-size: 20
+      connection-timeout: 10000
+  # 一期不强依赖 Redis，未申请实例时置空即可
+  data:
+    redis:
+      host: ${REDIS_HOST:}
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+server:
+  port: 8080
+  shutdown: graceful
+  # 位于 nginx 反代之后：透传 X-Forwarded-* 以正确生成审计日志中的客户端 IP
+  forward-headers-strategy: framework
+  tomcat:
+    max-swallow-size: 200MB
+    connection-timeout: 60s
+
+# 接口文档在容器环境默认关闭（避免暴露接口清单），联调期可临时置 true
+springdoc:
+  api-docs:
+    enabled: ${API_DOC_ENABLED:false}
+  swagger-ui:
+    enabled: ${API_DOC_ENABLED:false}
+knife4j:
+  enable: ${API_DOC_ENABLED:false}
+
+logging:
+  # 日志只输出到 stdout，由平台日志中心采集（禁止写容器内文件）
+  file:
+    name: ""
+  level:
+    root: info
+    com.zjlt.preaudit: info
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+preaudit:
+  storage:
+    # 挂载点与 PVC（preaudit-files）一致
+    root: ${STORAGE_ROOT:/data/uploads}
+  ai-service:
+    base-url: ${AI_SERVICE_URL:http://preaudit-ai:8000}
+    enabled: ${AI_SERVICE_ENABLED:true}
+  security:
+    token-secret: ${TOKEN_SECRET}
+  web:
+    # 同域发布（nginx 反代）时无需跨域；仅在分离部署时按域名放行
+    allowed-origins: ${ALLOWED_ORIGINS:}
+  check:
+    llm-attribution-enabled: ${LLM_ATTRIBUTION_ENABLED:false}

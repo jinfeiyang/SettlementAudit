@@ -1,0 +1,32 @@
+# 配置与密钥：容器云平台用「配置/密钥」界面创建，或 kubectl apply
+# 原则：连接串、密钥一律外置，镜像内不写环境差异（赛后迁移可整体复制）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: preaudit-config
+  namespace: zjbase-bmo        # 按平台实际命名空间修改（示例取自容器云截图）
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+  STORAGE_ROOT: "/data/uploads"
+  AI_SERVICE_URL: "http://preaudit-ai:8000"
+  AI_SERVICE_ENABLED: "true"
+  TZ: "Asia/Shanghai"
+  API_DOC_ENABLED: "false"     # 联调期可临时改 true
+  LLM_ATTRIBUTION_ENABLED: "false"
+  ALLOWED_ORIGINS: ""          # 同域反代无需跨域
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: preaudit-secret
+  namespace: zjbase-bmo
+type: Opaque
+stringData:
+  # 省公司统一提供的 MySQL 实例（需打网确认可达；不自建容器内库）
+  DB_URL: "jdbc:mysql://<mysql-host>:3306/cost_preaudit?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+  DB_USERNAME: "<db-user>"
+  DB_PASSWORD: "<db-password>"
+  # 令牌签名密钥：上线前替换为 32 位以上随机串，勿提交到代码库
+  TOKEN_SECRET: "<change-me-32-chars-random>"
+  # LLM 网关密钥（元景/vLLM）；留空时 AI 归因与成文降级为模板文案
+  LLM_API_KEY: ""

@@ -1,32 +1,28 @@
-# Java
-backend/target/
-*.class
-*.jar
-!.mvn/wrapper/maven-wrapper.jar
-
-# Node（覆盖根与各级子项目）
+# 依赖与构建产物
 node_modules/
 dist/
-*.local
+target/
+*.class
+
+# 本地工具链（仅为本地编译校验安装，不入库）
+.devtools/
+
+# 本地运行数据（H2 库与上传原件）
+backend/data/
+data/uploads/
 
 # Python
 __pycache__/
-.pytest_cache/
-ai-service/.venv/
 *.pyc
+.venv/
 
-# IDE
+# 日报/周报生成产物与钉钉多维表拉取缓存（本地生成，不入库）
+scripts/weekly_report.md
+scripts/weekly_report.txt
+scripts/.aitable_records.json
+
+# 系统与 IDE
+.DS_Store
 .idea/
 .vscode/
-*.iml
-
-# 环境与密钥（不入库）
-*.env
-.env.*
-application-local.yml
-*.pem
-*.key
-
-# 系统
-Thumbs.db
-.DS_Store
+*.log

@@ -1,0 +1,83 @@
+# AI/解析服务：8000，仅集群内访问（由后端调用 /parse/dxf、/llm/chat）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preaudit-ai
+  namespace: zjbase-bmo
+  labels:
+    app: preaudit-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: preaudit-ai
+  template:
+    metadata:
+      labels:
+        app: preaudit-ai
+    spec:
+      containers:
+        - name: ai
+          image: 130.36.8.236:8443/<项目>/preaudit-ai:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: TZ
+              value: "Asia/Shanghai"
+            # LLM 网关：元景 API（OpenAI 兼容）或内网 vLLM；未配置时后端自动降级为模板文案
+            - name: AI_LLM_BASE_URL
+              value: ""
+            - name: AI_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: preaudit-secret
+                  key: LLM_API_KEY
+                  optional: true
+            - name: AI_LLM_MODEL
+              value: "yuanjing-default"
+            # DWG 支持：镜像内已装 ODA 时填 /usr/bin/ODAFileConverter；留空则自动探测常见路径
+            # 未安装时 DWG 返回明确失败提示，DXF 与清单核查不受影响（无需前端/客户机装任何软件）
+            - name: AI_ODA_CONVERTER_PATH
+              value: "/usr/bin/ODAFileConverter"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"            # DXF 解析为 CPU 密集型
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: cache
+              mountPath: /data/cache
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: preaudit-ai-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: preaudit-ai
+  namespace: zjbase-bmo
+spec:
+  type: ClusterIP
+  selector:
+    app: preaudit-ai
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

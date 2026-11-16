@@ -1,0 +1,29 @@
+# 存储声明：容器云「存储」界面创建（先建存储卷声明，再在应用里配挂载点）
+# 平台截图参数：所属集群 BMO生产 / 动态存储 juice(JuiceFS) / 读写权限「读写(多写)」
+# 按申请配额 150GB 一次性创建（申请单见 docs/04 §8）：原件与报告中间文件 100GB、AI 解析缓存 50GB
+# 说明：若平台按实际用量计费，可按年增长逐步扩；若按声明容量核算，则以此为准
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: preaudit-files
+  namespace: zjbase-bmo
+spec:
+  accessModes:
+    - ReadWriteMany          # 多写：后端 + AI 服务可能同时读取原件
+  storageClassName: juice
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: preaudit-ai-cache
+  namespace: zjbase-bmo
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: juice
+  resources:
+    requests:
+      storage: 50Gi

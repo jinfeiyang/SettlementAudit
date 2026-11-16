@@ -1,0 +1,80 @@
+# 业务后端：8080，仅集群内访问（对外统一走 web 的 nginx 反代）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preaudit-backend
+  namespace: zjbase-bmo
+  labels:
+    app: preaudit-backend
+spec:
+  replicas: 1                  # 一期单副本；后续按 CPU 使用率扩至 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: preaudit-backend
+  template:
+    metadata:
+      labels:
+        app: preaudit-backend
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: backend
+          image: 130.36.8.236:8443/<项目>/preaudit-backend:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: preaudit-config
+            - secretRef:
+                name: preaudit-secret
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 40    # Spring Boot 启动约 15~25s，留余量
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: files
+              mountPath: /data/uploads
+      volumes:
+        - name: files
+          persistentVolumeClaim:
+            claimName: preaudit-files
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: preaudit-backend
+  namespace: zjbase-bmo
+spec:
+  type: ClusterIP               # 不对外暴露
+  selector:
+    app: preaudit-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

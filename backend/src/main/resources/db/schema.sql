@@ -1,7 +1,8 @@
 -- ============================================================
--- 通信工程造价结算 AI 预审分析工具 —— 一期库表骨架
+-- 通信工程造价结算 AI 预审分析工具 —— 一期库表
 -- 规则外置可配置：定额/取费规则落库（带版本与生效时间），支撑台账反哺闭环
 -- 结论可追溯：疑点记录来源（规则ID/清单行号/图元ID/AI归因/复核状态）
+-- 说明：MySQL 8.0 生产库；本地免装库的 H2 版本见 schema-h2.sql（内容保持一致）
 -- ============================================================
 
 CREATE DATABASE IF NOT EXISTS cost_preaudit DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -11,6 +12,7 @@ USE cost_preaudit;
 CREATE TABLE IF NOT EXISTS sys_user (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   username VARCHAR(64) NOT NULL COMMENT '登录名/4A账号',
+  password VARCHAR(200) COMMENT '密码摘要（SHA-256 加盐；接入 4A 后置空）',
   real_name VARCHAR(64) COMMENT '姓名',
   role_code VARCHAR(32) NOT NULL COMMENT 'AUDITOR 造价人员 / MANAGER 项目经理',
   status TINYINT NOT NULL DEFAULT 1 COMMENT '1启用 0禁用',
@@ -29,7 +31,8 @@ CREATE TABLE IF NOT EXISTS proj_project (
   city VARCHAR(64) COMMENT '地市',
   owner_user_id BIGINT COMMENT '造价人员',
   settle_amount DECIMAL(18,2) COMMENT '结算送审金额',
-  status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/CHECKING/REVIEWED/ARCHIVED',
+  status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/IMPORTED/CHECKING/CHECKED/REPORTED/ARCHIVED',
+  remark VARCHAR(512) COMMENT '备注',
   deleted TINYINT NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -39,11 +42,14 @@ CREATE TABLE IF NOT EXISTS proj_project (
 CREATE TABLE IF NOT EXISTS proj_file (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   project_id BIGINT NOT NULL,
-  file_type VARCHAR(32) NOT NULL COMMENT 'DWG/DXF/BOQ_EXCEL/SETTLE_DOC/OTHER',
+  file_type VARCHAR(32) NOT NULL COMMENT 'DWG/DXF/BOQ_EXCEL/RULE_EXCEL/SETTLE_DOC/OTHER',
   file_name VARCHAR(255) NOT NULL,
   storage_path VARCHAR(512) NOT NULL COMMENT '存储路径（容器云 PVC / MinIO）',
   file_size BIGINT,
   parse_status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/PARSING/SUCCESS/FAILED',
+  parse_rate DECIMAL(6,2) COMMENT '清单可解析率（%）',
+  parse_message VARCHAR(1024) COMMENT '解析提示/失败原因',
+  parse_result LONGTEXT COMMENT '解析结果（JSON：图元量算/清单统计）',
   deleted TINYINT NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -54,6 +60,7 @@ CREATE TABLE IF NOT EXISTS proj_file (
 CREATE TABLE IF NOT EXISTS boq_item (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   project_id BIGINT NOT NULL,
+  source_file_id BIGINT COMMENT '来源文件',
   row_no INT COMMENT '清单行号（回溯定位用）',
   item_code VARCHAR(64) COMMENT '原始编号',
   item_name VARCHAR(255) COMMENT '原始名称',
@@ -63,11 +70,17 @@ CREATE TABLE IF NOT EXISTS boq_item (
   unit_price DECIMAL(18,4),
   total_price DECIMAL(18,2),
   std_item_code VARCHAR(64) COMMENT '标准化后编号（清单标准化产出）',
-  std_item_name VARCHAR(255),
+  std_item_name VARCHAR(255) COMMENT '标准化后名称',
+  eng_type VARCHAR(32) COMMENT '标准化识别工程类型 LINE/DEVICE',
+  match_quota_code VARCHAR(64) COMMENT '推荐定额子目编号（B1）',
+  match_quota_name VARCHAR(255) COMMENT '推荐定额名称',
+  match_score DECIMAL(6,4) COMMENT '匹配置信度 0~1',
+  match_level TINYINT COMMENT '匹配级别 1精确 2语义召回 3未命中',
   deleted TINYINT NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  KEY idx_project (project_id)
+  KEY idx_project (project_id),
+  KEY idx_project_row (project_id, row_no)
 ) COMMENT '工程量清单项';
 
 -- 4. 规则库（外置可配置，带版本与生效时间）
@@ -77,6 +90,7 @@ CREATE TABLE IF NOT EXISTS rule_quota (
   quota_name VARCHAR(255) NOT NULL COMMENT '定额名称',
   unit VARCHAR(32),
   base_price DECIMAL(18,4) COMMENT '基价',
+  labor_price DECIMAL(18,4) COMMENT '人工费（取费基数用）',
   feature_keys TEXT COMMENT '特征关键词（JSON 数组，语义召回用）',
   eng_type VARCHAR(32) COMMENT '适用工程类型',
   version VARCHAR(32) NOT NULL DEFAULT 'v1',
@@ -109,9 +123,11 @@ CREATE TABLE IF NOT EXISTS rule_fee (
 CREATE TABLE IF NOT EXISTS issue (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   project_id BIGINT NOT NULL,
+  boq_item_id BIGINT COMMENT '关联清单项',
   issue_type VARCHAR(64) NOT NULL COMMENT 'QUOTA_MISMATCH/FEE_ERROR/QTY_ERROR/DUP_CHARGE/OTHER',
   level TINYINT NOT NULL COMMENT '3高=确定偏差 2中=疑似需复核 1低=提示性',
   rule_id BIGINT COMMENT '命中规则ID（审计链）',
+  rule_code VARCHAR(64) COMMENT '命中规则标识（如 B1-EXACT / B2-FEE-RATE）',
   ref_type VARCHAR(32) COMMENT 'BOQ_ROW 清单行号 / ENTITY_ID 图元ID',
   ref_value VARCHAR(255) COMMENT '行号或图元ID（回溯定位）',
   title VARCHAR(255) NOT NULL,
@@ -125,7 +141,8 @@ CREATE TABLE IF NOT EXISTS issue (
   deleted TINYINT NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  KEY idx_project_level (project_id, level)
+  KEY idx_project_level (project_id, level),
+  KEY idx_boq_item (boq_item_id)
 ) COMMENT '疑点清单';
 
 -- 6. 预审报告（模板装配 + AI 成文，版本管理）
@@ -133,7 +150,8 @@ CREATE TABLE IF NOT EXISTS report (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   project_id BIGINT NOT NULL,
   title VARCHAR(255) NOT NULL,
-  content LONGTEXT COMMENT '结构化内容（JSON：章节/表格/文字，Poi-tl 模板装配源）',
+  content LONGTEXT COMMENT '结构化内容（JSON：章节/表格/文字，Word 导出源）',
+  ai_model VARCHAR(64) COMMENT '成文所用模型（空=模板成文）',
   status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/CONFIRMED/EXPORTED',
   version INT NOT NULL DEFAULT 1,
   confirm_user_id BIGINT COMMENT '项目经理确认人',
@@ -143,3 +161,33 @@ CREATE TABLE IF NOT EXISTS report (
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_project (project_id)
 ) COMMENT '预审报告';
+
+-- 7. 异步任务（核查/解析进度，G2）
+CREATE TABLE IF NOT EXISTS async_task (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  project_id BIGINT COMMENT '所属项目',
+  task_type VARCHAR(32) NOT NULL COMMENT 'CHECK 核查 / PARSE 解析',
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/RUNNING/SUCCESS/FAILED',
+  progress INT NOT NULL DEFAULT 0 COMMENT '0-100',
+  total INT NOT NULL DEFAULT 0,
+  message VARCHAR(1024),
+  result_json LONGTEXT COMMENT '任务结果摘要（命中率/疑点数等）',
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_project (project_id)
+) COMMENT '异步任务';
+
+-- 8. 审计日志（G3 安全基线）
+CREATE TABLE IF NOT EXISTS audit_log (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT,
+  username VARCHAR(64),
+  action VARCHAR(32) COMMENT 'HTTP 方法',
+  target VARCHAR(512) COMMENT '请求路径',
+  detail VARCHAR(1024) COMMENT '参数摘要',
+  ip VARCHAR(64),
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_user (username),
+  KEY idx_time (create_time)
+) COMMENT '操作审计日志';

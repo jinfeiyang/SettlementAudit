@@ -10,7 +10,7 @@ export function useRouteMeta(): RouteMetaItem[] {
   const root = router.options.routes.find((r) => r.path === '/')
   const children = root?.children ?? []
   return children
-    .filter((c) => c.meta && 'title' in c.meta)
+    .filter((c) => c.meta && 'title' in c.meta && !c.meta.hide)
     .map((c) => ({
       path: String(c.path),
       title: String(c.meta!.title),

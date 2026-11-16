@@ -1,0 +1,28 @@
+# 本地开发 profile：免装 MySQL（H2 文件库），一条命令即可跑通一期主链路
+# 启动：mvn spring-boot:run -Dspring-boot.run.profiles=local
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/h2/preaudit;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema-h2.sql
+      continue-on-error: false
+      encoding: UTF-8
+  data:
+    redis:
+      # local profile 未安装 Redis 时直接关闭相关自动装配的探活
+      repositories:
+        enabled: false
+
+logging:
+  level:
+    com.zjlt.preaudit: debug

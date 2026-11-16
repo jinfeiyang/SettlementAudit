@@ -1,0 +1,25 @@
+# 镜像构建上下文（仓库根目录）排除项
+# 注意：backend/target 与 frontend/dist 必须保留——镜像直接拷贝构建产物
+.git
+.gitignore
+.devtools
+node_modules
+**/node_modules
+data
+**/data/h2
+**/data/uploads
+**/__pycache__
+**/*.pyc
+.venv
+.idea
+.vscode
+.DS_Store
+*.log
+frontend/src
+frontend/public
+frontend/index.html
+frontend/vite.config.ts
+frontend/tsconfig*.json
+frontend/package*.json
+backend/src
+docs
