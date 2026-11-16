@@ -39,7 +39,7 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="resultVisible" title="图纸解析与量算结果（A1）" width="720px">
+    <el-dialog v-model="resultVisible" title="图纸解析与量算结果（A1）" width="70%">
       <el-descriptions :column="2" border size="small">
         <el-descriptions-item label="解析摘要" :span="2">
           {{ result.summary || '-' }}
@@ -49,8 +49,67 @@
         <el-descriptions-item label="线路总长（米）">{{ measure.totalLengthMeters ?? '-' }}</el-descriptions-item>
         <el-descriptions-item label="线缆图层长度（米）">{{ measure.cableLengthMeters ?? '-' }}</el-descriptions-item>
         <el-descriptions-item label="设备数量（个）">{{ measure.deviceCount ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="说明">{{ result.hint || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="材料表 / 条目">
+          {{ measure.materialTableCount ?? 0 }} 张 / {{ measure.materialItemCount ?? 0 }} 条
+        </el-descriptions-item>
+        <el-descriptions-item label="表格识别方式">{{ tableSourceLabel() }}</el-descriptions-item>
+        <el-descriptions-item label="说明" :span="2">{{ result.hint || '-' }}</el-descriptions-item>
       </el-descriptions>
+
+      <template v-if="projectInfo.length">
+        <h4>项目情况</h4>
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item
+            v-for="item in projectInfo"
+            :key="item.label"
+            :label="item.label"
+            :span="item.value.length > 24 ? 2 : 1"
+          >{{ item.value }}</el-descriptions-item>
+        </el-descriptions>
+      </template>
+
+      <h4>材料设备清单归纳统计</h4>
+      <el-table
+        v-if="materialSummary.length"
+        :data="materialSummary"
+        size="small"
+        border
+        stripe
+        max-height="320"
+        class="summary-table"
+        :header-cell-style="{ background: '#fafafa', color: '#606266', fontWeight: 600 }"
+      >
+        <el-table-column type="index" label="序号" width="60" align="center" />
+        <el-table-column prop="name" label="名称" min-width="170" show-overflow-tooltip />
+        <el-table-column prop="spec" label="规格程式" min-width="260" show-overflow-tooltip />
+        <el-table-column prop="unit" label="单位" width="70" align="center" />
+        <el-table-column prop="quantity" label="合计数量" width="130" align="right" class-name="num-cell">
+          <template #default="{ row }">{{ formatQuantity(row.quantity) }}</template>
+        </el-table-column>
+        <el-table-column prop="tableCount" label="来源表数" width="100" align="right" class-name="num-cell" />
+      </el-table>
+      <el-empty v-else description="未识别到可统计的材料数量" :image-size="60" />
+
+      <h4>材料设备清单明细</h4>
+      <div v-if="materialTables.length" class="material-scroll">
+        <div v-for="table in materialTables" :key="table.table" class="material-table">
+          <div class="material-title">
+            表 {{ table.frameIndex ?? table.table }}
+            <span v-if="table.frame" class="material-block">{{ frameLabel(table) }}</span>
+          </div>
+          <el-table :data="table.rows" size="small" border>
+            <el-table-column
+              v-for="(column, index) in table.columns"
+              :key="index"
+              :label="column"
+              min-width="90"
+            >
+              <template #default="{ row }">{{ row[index] }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
+      <el-empty v-else description="未识别到材料设备清单表格，可确认该图纸是否含工程量/材料明细表" :image-size="60" />
 
       <h4>线缆图层长度（米）</h4>
       <el-table :data="layerRows" size="small" border empty-text="未识别到线缆图层">
@@ -95,8 +154,19 @@ const drawingVisible = ref(false)
 const drawingFile = ref<FileVO | null>(null)
 const result = ref<Record<string, any>>({})
 const measure = ref<Record<string, any>>({})
+const projectInfo = ref<{ label: string; value: string }[]>([])
 const layerRows = ref<{ layer: string; length: number }[]>([])
 const blockRows = ref<{ block: string; count: number }[]>([])
+const materialTables = ref<{
+  table: number
+  frameIndex: number | null
+  frame: number | null
+  frameSheet: string | null
+  frameTitle: string | null
+  columns: string[]
+  rows: string[][]
+}[]>([])
+const materialSummary = ref<{ name: string; spec: string; unit: string; quantity: number; tableCount: number }[]>([])
 let timer: number | undefined
 
 function isDrawingFile(row: FileVO) {
@@ -121,7 +191,32 @@ async function showResult(row: FileVO) {
   layerRows.value = Object.keys(layers).map((layer) => ({ layer, length: layers[layer] }))
   const blocks: Record<string, number> = measure.value.deviceBlocks ?? {}
   blockRows.value = Object.keys(blocks).map((block) => ({ block, count: blocks[block] }))
+  projectInfo.value = result.value.projectInfo ?? []
+  materialTables.value = result.value.materials ?? []
+  materialSummary.value = result.value.materialSummary ?? []
   resultVisible.value = true
+}
+
+/** 表格识别方式：后端会说明这张图是用哪种画法抽出表的，0 张时提示未识别 */
+function tableSourceLabel() {
+  const sources: { key: string; label: string; count: number }[] =
+    result.value.materialDiagnostics?.sources ?? []
+  const hit = sources.filter((item) => item.count > 0)
+  if (!hit.length) return '未识别到表格'
+  return hit.map((item) => `${item.label} ${item.count} 张`).join(' / ')
+}
+
+/** 归纳表的数量：整数不带小数点，长数字加千分位，便于肉眼核对量级 */
+function formatQuantity(value: number) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  return value.toLocaleString('zh-CN', { maximumFractionDigits: 3 })
+}
+
+/** 材料表来源图框：优先用图签印的「第 X 张」+ 图名，取不到再退回图框序号 */
+function frameLabel(table: { frame: number | null; frameSheet: string | null; frameTitle: string | null }) {
+  if (!table.frameSheet) return `图框 ${table.frame}`
+  const title = table.frameTitle ? ` · ${table.frameTitle}` : ''
+  return `第 ${table.frameSheet} 张${title}`
 }
 
 function typeLabel(type: string) {
@@ -212,5 +307,40 @@ onBeforeUnmount(stopPoll)
 .hint {
   color: #909399;
   font-size: 12px;
+}
+.summary-table {
+  width: 100%;
+}
+
+/* 归纳表：单元格收紧一点，长规格被省略号截断后靠 tooltip 看全 */
+.summary-table :deep(.el-table__cell) {
+  padding: 5px 8px;
+}
+
+.summary-table :deep(.cell) {
+  line-height: 22px;
+}
+
+/* 数量、来源表数按等宽数字对齐，10838 与 2969.4 的小数位不会左右抖 */
+.summary-table :deep(.num-cell .cell) {
+  font-variant-numeric: tabular-nums;
+}
+
+.material-scroll {
+  max-height: 46vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+.material-table {
+  margin-bottom: 12px;
+}
+.material-title {
+  font-size: 12px;
+  color: #606266;
+  margin: 0 0 4px;
+}
+.material-block {
+  margin-left: 6px;
+  color: #a8abb2;
 }
 </style>

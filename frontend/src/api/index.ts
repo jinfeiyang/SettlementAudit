@@ -191,9 +191,16 @@ export const projectApi = {
   deleteFile: (fileId: number) => request.delete<void>(`/files/${fileId}`),
   downloadFile: (fileId: number, name: string) => download(`/files/${fileId}/download`, name),
   parseResult: (fileId: number) => request.get<Record<string, any>>(`/files/${fileId}/result`),
-  /** 图纸预览：dxf 为交互渲染数据（前端解析），svg 为服务端渲染快照（大图降级） */
+  /**
+   * 图纸预览：dxf 为交互渲染数据（前端解析），svg 为服务端渲染快照（大图降级）。
+   * 带时间戳是为了绕开浏览器对 GET 的强缓存：出图结果会随后处理逻辑变化，
+   * 命中缓存会让人误以为改动没生效。
+   */
   drawing: (fileId: number, format: 'dxf' | 'svg' = 'dxf') =>
-    request.get<Blob>(`/files/${fileId}/drawing`, { params: { format }, responseType: 'blob' }),
+    request.get<Blob>(`/files/${fileId}/drawing`, {
+      params: { format, _t: Date.now() },
+      responseType: 'blob',
+    }),
   boqTemplate: () => download('/projects/0/boq/template', '工程量清单导入模板.xlsx'),
 }
 

@@ -86,7 +86,8 @@ public class ProjectFileController {
         return ResponseEntity.ok()
                 .contentType(contentType)
                 .header("X-Drawing-Cache", drawing.cacheHit() == null ? "" : drawing.cacheHit())
-                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=600")
+                // 出图结果会随后处理逻辑变化，不能强缓存：浏览器缓存住旧 DXF 会让人以为改动没生效
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-cache")
                 .body(drawing.data());
     }
 
