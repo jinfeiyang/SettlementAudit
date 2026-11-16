@@ -1,0 +1,32 @@
+# Java
+backend/target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# Node（覆盖根与各级子项目）
+node_modules/
+dist/
+*.local
+
+# Python
+__pycache__/
+.pytest_cache/
+ai-service/.venv/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 环境与密钥（不入库）
+*.env
+.env.*
+application-local.yml
+*.pem
+*.key
+
+# 系统
+Thumbs.db
+.DS_Store

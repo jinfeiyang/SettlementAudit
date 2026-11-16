@@ -1,0 +1,16 @@
+{
+  "name": "preaudit",
+  "private": true,
+  "version": "0.1.0",
+  "description": "通信工程造价结算 AI 预审分析工具 —— 根启动脚本（编排 backend / ai-service / frontend）",
+  "scripts": {
+    "dev": "concurrently -n backend,ai,web -c blue,green,magenta \"npm:dev:backend\" \"npm:dev:ai\" \"npm:dev:web\"",
+    "dev:backend": "cd backend && mvn spring-boot:run",
+    "dev:ai": "cd ai-service && python -m uvicorn app.main:app --reload --port 8000",
+    "dev:web": "cd frontend && npm run dev",
+    "build:web": "cd frontend && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

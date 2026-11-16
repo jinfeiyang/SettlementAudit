@@ -1,0 +1,61 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: preaudit-backend
+  datasource:
+    # 生产/测试环境由省公司统一提供 MySQL 实例，按连接串接入
+    url: jdbc:mysql://localhost:3306/cost_preaudit?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 2
+      maximum-pool-size: 10
+  data:
+    # 骨架阶段 Redis 可不启动（Lettuce 懒连接，不影响应用启动）
+    redis:
+      host: localhost
+      port: 6379
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+  servlet:
+    multipart:
+      # 图纸/清单文件上传上限（DWG/DXF/Excel）
+      max-file-size: 100MB
+      max-request-size: 200MB
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+
+knife4j:
+  enable: true
+
+logging:
+  level:
+    com.zjlt.preaudit: debug
+
+preaudit:
+  # AI/解析服务（独立 FastAPI 进程，见 ai-service/）
+  ai-service:
+    base-url: http://localhost:8000
+    connect-timeout-ms: 5000
+    read-timeout-ms: 60000
