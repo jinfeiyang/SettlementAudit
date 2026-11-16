@@ -29,6 +29,7 @@ ODA_CANDIDATES = (
     "/opt/ODAFileConverter/ODAFileConverter",
     "/opt/oda/ODAFileConverter",
     r"C:\Program Files\ODA\ODAFileConverter\ODAFileConverter.exe",
+    r"C:\Program Files (x86)\ODA\ODAFileConverter\ODAFileConverter.exe",
 )
 ODA_DOWNLOAD_URL = "https://www.opendesign.com/guestfiles/oda_file_converter"
 DEVICE_HINTS = ("设备", "机架", "机柜", "天线", "开关", "电源", "盒", "箱", "盘", "架")
@@ -79,6 +80,28 @@ def _to_meters(length: float, units: str) -> float:
     return length * factor
 
 
+def _windows_oda_candidates() -> list[str]:
+    """Windows 安装包会把 exe 放进带版本号的子目录（如 ODAFileConverter 27.9），需展开探测。"""
+    if os.name != "nt":
+        return []
+    roots = {
+        os.environ.get("ProgramW6432"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+    }
+    found: list[str] = []
+    for root in sorted(r for r in roots if r):
+        base = Path(root) / "ODA"
+        if not base.is_dir():
+            continue
+        direct = base / "ODAFileConverter.exe"
+        if direct.is_file():
+            found.append(str(direct))
+        for exe in sorted(base.glob("*/ODAFileConverter.exe"), reverse=True):
+            found.append(str(exe))
+    return found
+
+
 def resolve_oda_converter(configured: str = "") -> str:
     """定位 ODA File Converter：优先 AI_ODA_CONVERTER_PATH，其次 PATH 与常见安装路径自动探测。
 
@@ -89,10 +112,11 @@ def resolve_oda_converter(configured: str = "") -> str:
         if path.exists():
             return str(path)
         logger.warning("AI_ODA_CONVERTER_PATH 指向的文件不存在：%s，转为自动探测", configured)
-    found = shutil.which("ODAFileConverter")
-    if found:
-        return found
-    for candidate in ODA_CANDIDATES:
+    for name in ("ODAFileConverter", "ODAFileConverter.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for candidate in (*ODA_CANDIDATES, *_windows_oda_candidates()):
         if Path(candidate).exists():
             return candidate
     return ""
@@ -118,8 +142,9 @@ def convert_dwg_to_dxf(src: Path, converter: str) -> Path:
     if not exe:
         raise RuntimeError(
             "DWG 无法直接解析，需先装 ODA File Converter 转 DXF："
-            "安装后设置 AI_ODA_CONVERTER_PATH（macOS 一般为 "
-            "/Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter，"
+            "安装后设置 AI_ODA_CONVERTER_PATH（Windows 一般为 "
+            r"C:\Program Files\ODA\ODAFileConverter <版本>\ODAFileConverter.exe，"
+            "macOS 为 /Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter，"
             "Linux 为 /usr/bin/ODAFileConverter），留空时也会自动探测上述路径；"
             f"或把图纸另存为 DXF 后重新上传。下载：{ODA_DOWNLOAD_URL}"
         )
