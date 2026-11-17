@@ -48,6 +48,7 @@ public class CheckRunner {
     private final RuleService ruleService;
     private final QuotaMatchService quotaMatchService;
     private final FeeCheckService feeCheckService;
+    private final DrawingCheckService drawingCheckService;
     private final AiServiceClient aiClient;
 
     @Value("${preaudit.check.amount-tolerance:1.00}")
@@ -130,6 +131,12 @@ public class CheckRunner {
 
         CheckDtos.FeeResult feeResult = feeCheckService.check(project, items, quotas, fees);
         collectFeeIssues(project.getId(), feeResult, fees, issues);
+
+        // B3 图纸-清单核对：用竣工图解析出的材料表跟清单比量（没有图纸解析结果时自动跳过）
+        task.setProgress(88);
+        task.setMessage("正在核对图纸材料与清单");
+        taskMapper.updateById(task);
+        issues.addAll(drawingCheckService.check(project, items));
 
         if (llmAttributionEnabled) {
             enrichWithAi(issues);

@@ -79,5 +79,11 @@ preaudit:
     fee-deviation-high-threshold: 0.15
     # 清单合价一致性容差（元）
     amount-tolerance: 1.00
+    # 图纸-清单核对：图纸数量相对清单数量的偏差告警阈值（0~1）
+    drawing-deviation-threshold: 0.05
+    # 图纸数量偏小超过该幅度记高风险（0~1）
+    drawing-high-threshold: 0.20
+    # 图纸材料与清单名称的匹配相似度门槛（低于该值视为图纸无对应）
+    drawing-match-threshold: 0.55
     # 是否调用 LLM 生成疑点归因（不可用时自动降级为规则文案）
     llm-attribution-enabled: false

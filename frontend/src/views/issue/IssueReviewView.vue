@@ -101,6 +101,7 @@ const typeOptions: Record<string, string> = {
   FEE_ERROR: '取费核查',
   QTY_ERROR: '工程量/合价',
   DUP_CHARGE: '重复计费',
+  DRAWING_MISMATCH: '图纸核对',
   OTHER: '其他',
 }
 

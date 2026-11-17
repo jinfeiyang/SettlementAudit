@@ -42,6 +42,8 @@ public final class Dict {
     public static final String ISSUE_FEE = "FEE_ERROR";
     public static final String ISSUE_QTY = "QTY_ERROR";
     public static final String ISSUE_DUP = "DUP_CHARGE";
+    /** 图纸-清单核对：图纸无对应材料、图纸数量与清单偏差 */
+    public static final String ISSUE_DRAWING = "DRAWING_MISMATCH";
     public static final String ISSUE_OTHER = "OTHER";
 
     // 疑点级别
@@ -86,6 +88,7 @@ public final class Dict {
             ISSUE_FEE, "取费核查",
             ISSUE_QTY, "工程量/合价",
             ISSUE_DUP, "重复计费",
+            ISSUE_DRAWING, "图纸核对",
             ISSUE_OTHER, "其他");
 
     private static final Map<Integer, String> ISSUE_LEVEL = Map.of(
