@@ -341,6 +341,10 @@ def summarize_annotations(segments: list[dict[str, Any]], totals: list[dict[str,
 _TABLE_BLOCK_RE = re.compile(r"^\*T\d+$")
 # 表头识别用：出现 2 个以上即认为是表头行
 _TABLE_HEADER_HINTS = {"序号", "名称", "项目名称", "规格", "规格程式", "型号", "单位", "数量", "备注"}
+# CAD 里表头常把字拆开写（「数 量」「规 格 程 式」），比对前先去空白
+_HEADER_SPACE_RE = re.compile(r"[\s\u3000]+")
+# 合计/小计这类行是独立数据行，拆行合并时要避开
+_TABLE_RECAP_HINTS = ("合计", "小计", "总计", "累计")
 _TABLE_MAX_TABLES = 50
 _TABLE_MAX_ROWS = 300
 # 无表格块时按文字还原：行容差取行距中位数的比例，列容差取最小列距的比例
@@ -571,18 +575,35 @@ def _rows_by_text(items) -> list[list[str]]:
 
 
 def _cluster_rows(items, tol: float) -> list[list[tuple[float, float, str]]]:
-    """把文字按 y 聚成行（行内按 x 升序），供无表格块的图纸还原表格。"""
+    """把文字按 y 聚成行（行内按 x 升序），供无表格块的图纸还原表格。
+
+    归行阈值拿"本行已归入文字的平均 y"比，而不是拿行里第一个文字比：并排几张表的
+    行常常差零点几毫米，用首字当基准会把同一行拆成两行（序号、单位掉到下一行）。
+    """
     rows: list[list[tuple[float, float, str]]] = []
+    means: list[float] = []
     for item in sorted(items, key=lambda it: -it[1]):
-        if rows and abs(item[1] - rows[-1][0][1]) <= tol:
+        if rows and abs(item[1] - means[-1]) <= tol:
             rows[-1].append(item)
+            means[-1] = (means[-1] * (len(rows[-1]) - 1) + item[1]) / len(rows[-1])
         else:
             rows.append([item])
+            means.append(item[1])
     return [sorted(row, key=lambda it: it[0]) for row in rows]
 
 
+def _norm_header(text: str) -> str:
+    """表头归一化：CAD 里常写成「数 量」「规 格 程 式」，去掉空白才认得出。"""
+    return _HEADER_SPACE_RE.sub("", text or "")
+
+
+def _is_header_text(text: str) -> bool:
+    key = _norm_header(text)
+    return any(hint in key for hint in _TABLE_HEADER_HINTS)
+
+
 def _is_header_row(row) -> bool:
-    return sum(1 for _, _, text in row if text in _TABLE_HEADER_HINTS) >= 2
+    return sum(1 for _, _, text in row if _is_header_text(text)) >= 2
 
 
 def _split_row(row) -> list[list[tuple[float, float, str]]]:
@@ -602,6 +623,31 @@ def _split_row(row) -> list[list[tuple[float, float, str]]]:
         else:
             clusters[-1].append(item)
     return clusters
+
+
+def _merge_split_rows(body: list[list[str]]) -> list[list[str]]:
+    """把被拆成两行的同一行数据合回来。
+
+    有的图纸「序号、单位」和「名称、规格、数量」基线差一点点，按 y 聚行时会分成两行：
+    ['', '普通层绞式通信光缆', 'GYTS-48B1', '', '1787.9'] 与 ['1', '', '', '米', '']。
+    后一行只有零星两格、且和上一行不冲突时，补进上一行的空格里。
+    """
+    merged: list[list[str]] = []
+    for row in body:
+        filled = sum(1 for cell in row if cell)
+        if merged and filled <= 2:
+            prev = merged[-1]
+            texts = [cell for cell in row if cell]
+            conflict = any(prev[i] and row[i] for i in range(min(len(prev), len(row))))
+            # 「合计/小计」这类行是独立的数据行，不能并到上一行去
+            recap = any(hint in text for text in texts for hint in _TABLE_RECAP_HINTS)
+            if not conflict and not recap and sum(1 for cell in prev if cell) >= 2:
+                for index, cell in enumerate(row):
+                    if cell and index < len(prev) and not prev[index]:
+                        prev[index] = cell
+                continue
+        merged.append(list(row))
+    return merged
 
 
 def _text_tables(entries) -> list[dict[str, Any]]:
@@ -625,7 +671,7 @@ def _text_tables(entries) -> list[dict[str, Any]]:
             if not _is_header_row(cluster):
                 continue
             # 表头左右可能粘着同一高度的标注文字（尺寸、编号），按表头关键词位置裁掉
-            hint_index = [i for i, (_, _, text) in enumerate(cluster) if text in _TABLE_HEADER_HINTS]
+            hint_index = [i for i, (_, _, text) in enumerate(cluster) if _is_header_text(text)]
             cluster = cluster[hint_index[0]:hint_index[-1] + 1]
             centers = [x for x, _, _ in cluster]
             columns = [text or f"列{i + 1}" for i, (_, _, text) in enumerate(cluster)]
@@ -653,9 +699,9 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                 values = ["" for _ in centers]
                 filled = 0
                 for x, _, text in cells:
+                    # 按"离哪一列的列心最近"归列：文字插入点是左边缘，长的单元格名
+                    # （普通层绞式通信光缆）左边缘会离列心很远，卡死容差会把名称整列丢掉
                     index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
-                    if abs(centers[index] - x) > tol:
-                        continue
                     values[index] = f"{values[index]} {text}".strip() if values[index] else text
                     filled += 1
                 if not filled:
@@ -663,6 +709,9 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                 # 序号、名称都没有的"行"其实是表格下方的长度标注（管53.2、加挂25.8 之类）
                 if not values[0] and not (len(values) > 1 and values[1]):
                     break
+                # 只填了一格的多半是「主要材料(乙供)表」这类表标题或表注，不当数据行
+                if filled == 1 and not values[0]:
+                    continue
                 body.append(values)
                 if gap > 1e-6:
                     pitches.append(gap)
@@ -673,6 +722,7 @@ def _text_tables(entries) -> list[dict[str, Any]]:
             # 至少要有一行是真正填了多个单元格的，避免把零散标注当成表
             if not any(sum(1 for cell in values if cell) >= 2 for values in body):
                 continue
+            body = _merge_split_rows(body)
             tables.append({
                 "block": "",
                 "columns": columns,
@@ -867,7 +917,8 @@ def _sheet_rank(frame: dict[str, Any] | None) -> tuple[int, int]:
 def _match_column(columns: list[str], keys: tuple[str, ...]) -> int | None:
     for key in keys:
         for index, name in enumerate(columns):
-            if key in name:
+            # 列名同样要先归一化：「数 量」「数量(米)」都要能对上「数量」
+            if key in _norm_header(name):
                 return index
     return None
 
