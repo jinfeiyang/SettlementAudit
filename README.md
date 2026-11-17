@@ -53,9 +53,17 @@ npm install                     # 根依赖（concurrently）
 cd frontend && npm install      # 前端依赖
 python3 -m pip install -r ../ai-service/requirements.txt
 
+# 机器上没有 JDK / Maven（brew 也不可用）时，装便携工具链到 ~/tools，无需 sudo
+bash scripts/install-toolchain.sh
+
 # 一键启动：后端(8080, H2 本地库) + AI服务(8000) + 前端(5173)
 npm run dev
 ```
+
+> 后端由 `scripts/run-backend.js` 启动，JDK / Maven 由 `scripts/toolchain.js` 统一解析：
+> 环境变量（`JAVA_HOME` / `MAVEN_HOME`）→ PATH → `~/tools` 便携工具链 → macOS 系统 JDK。
+> 报 `spawn mvn ENOENT` 说明这台机器没装 Maven，执行上面的安装脚本即可（Windows 装完
+> Maven 并确认 `mvn` 在 PATH 里即可，无需该脚本）。
 
 单独启动：
 

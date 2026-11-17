@@ -14,7 +14,8 @@
     "daily": "node scripts/daily_prompt.js",
     "daily:build": "node scripts/run-python.js scripts/build_daily_report.py",
     "weekly": "node scripts/run-python.js scripts/build_weekly_report.py",
-    "weekly:refresh": "node scripts/run-python.js scripts/build_weekly_report.py"
+    "weekly:refresh": "node scripts/run-python.js scripts/build_weekly_report.py",
+    "dev:backend:mysql": "node scripts/run-backend.js mysql"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

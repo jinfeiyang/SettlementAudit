@@ -13,6 +13,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const { cleanEnv } = require('./clean-env');
+const { toolchainEnv, printMissing } = require('./toolchain');
 
 const rootDir = path.join(__dirname, '..');
 const backendDir = path.join(rootDir, 'backend');
@@ -21,17 +22,19 @@ const frontendDir = path.join(rootDir, 'frontend');
 
 const isWindows = os.platform() === 'win32';
 const pythonCmd = isWindows ? 'python' : 'python3';
-const mavenCmd = isWindows ? 'mvn.cmd' : 'mvn';
 
-function run(name, cmd, args, cwd, color) {
+function run(name, cmd, args, cwd, env, hint) {
   const child = spawn(cmd, args, {
     cwd,
-    env: cleanEnv(),
+    env: env || cleanEnv(),
     shell: isWindows,
     stdio: 'inherit',
   });
   child.on('exit', (code) => {
-    if (code !== 0 && code !== null) console.log(`[${name}] 退出 (code=${code})`);
+    if (code !== 0 && code !== null) {
+      console.log(`[${name}] 退出 (code=${code})`);
+      if (hint) console.log(hint);
+    }
   });
   child.on('error', (err) => console.error(`[${name}] 启动失败: ${err.message}`));
   return child;
@@ -40,10 +43,20 @@ function run(name, cmd, args, cwd, color) {
 const children = [];
 children.push(run('web', 'npm', ['run', 'dev'], frontendDir));
 children.push(run('ai', pythonCmd, ['-m', 'uvicorn', 'app.main:app', '--reload', '--port', '8000'], aiServiceDir));
-// local profile：H2 文件库，免装 MySQL/Redis，本地一条命令即可跑通主链路
-children.push(
-  run('backend', mavenCmd, ['spring-boot:run', '-Dspring-boot.run.profiles=local'], backendDir),
-);
+
+// local profile：H2 文件库，免装 MySQL/Redis，本地一条命令即可跑通主链路。
+// JDK / Maven 由 toolchain 统一解析（环境变量 → PATH → ~/tools 便携工具链）。
+const backendToolchain = toolchainEnv(cleanEnv());
+if (backendToolchain.mvn && backendToolchain.javaHome) {
+  children.push(
+    run('backend', backendToolchain.mvn, ['spring-boot:run', '-Dspring-boot.run.profiles=local'],
+      backendDir, backendToolchain.env,
+      '   ⚠ 后端失败常见原因：8080 端口被占用、H2 文件被另一个实例锁住（先关掉旧的后端/IDE 里的 Application）'),
+  );
+} else {
+  printMissing({ mvn: !backendToolchain.mvn, javaHome: !backendToolchain.javaHome });
+  console.error('   ⚠ 前端与 AI 服务照常启动，但后端不会启动（登录等 /api 接口会 500）');
+}
 
 function killTree(child) {
   if (!child.pid) return;
