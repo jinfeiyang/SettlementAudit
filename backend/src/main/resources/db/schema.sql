@@ -27,7 +27,12 @@ CREATE TABLE IF NOT EXISTS proj_project (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   project_no VARCHAR(64) NOT NULL COMMENT '项目编号',
   project_name VARCHAR(255) NOT NULL COMMENT '项目名称',
-  eng_type VARCHAR(32) COMMENT '工程类型：LINE 线路 / DEVICE 设备安装',
+  eng_type VARCHAR(32) COMMENT '工程类型：LINE 线路 / DEVICE 设备安装（页面暂不展示）',
+  contract_no VARCHAR(64) COMMENT '合同编号',
+  order_no VARCHAR(128) COMMENT '订单编号',
+  builder_unit VARCHAR(255) COMMENT '施工单位',
+  supervisor_unit VARCHAR(255) COMMENT '监理单位',
+  construction_fee DECIMAL(18,2) COMMENT '施工费（元，不含税）',
   city VARCHAR(64) COMMENT '地市',
   owner_user_id BIGINT COMMENT '造价人员',
   settle_amount DECIMAL(18,2) COMMENT '结算送审金额',
@@ -36,7 +41,7 @@ CREATE TABLE IF NOT EXISTS proj_project (
   deleted TINYINT NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_project_no (project_no)
+  KEY idx_project_no (project_no)
 ) COMMENT '预审项目';
 
 CREATE TABLE IF NOT EXISTS proj_file (
@@ -62,6 +67,8 @@ CREATE TABLE IF NOT EXISTS boq_item (
   project_id BIGINT NOT NULL,
   source_file_id BIGINT COMMENT '来源文件',
   row_no INT COMMENT '清单行号（回溯定位用）',
+  item_type VARCHAR(32) COMMENT 'QUOTA 工程量 / MATERIAL 乙供材料 / SUPPLY_MATERIAL 甲供材料 / SUPPLY_EQUIPMENT 甲供设备',
+  source_sheet VARCHAR(64) COMMENT '来源工作表（表三甲/表四甲/表八）',
   item_code VARCHAR(64) COMMENT '原始编号',
   item_name VARCHAR(255) COMMENT '原始名称',
   feature_desc TEXT COMMENT '项目特征',
@@ -191,3 +198,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
   KEY idx_user (username),
   KEY idx_time (create_time)
 ) COMMENT '操作审计日志';
+
+-- ------------------------------------------------------------
+-- 已存在的库升级用（新建库无需执行，建表语句已包含这些列）：
+-- ALTER TABLE proj_project ADD COLUMN contract_no VARCHAR(64) COMMENT '合同编号' AFTER eng_type;
+-- ALTER TABLE proj_project ADD COLUMN order_no VARCHAR(128) COMMENT '订单编号' AFTER contract_no;
+-- ALTER TABLE proj_project ADD COLUMN builder_unit VARCHAR(255) COMMENT '施工单位' AFTER order_no;
+-- ALTER TABLE proj_project ADD COLUMN supervisor_unit VARCHAR(255) COMMENT '监理单位' AFTER builder_unit;
+-- ALTER TABLE proj_project ADD COLUMN construction_fee DECIMAL(18,2) COMMENT '施工费（元，不含税）' AFTER supervisor_unit;
+-- 项目编号不唯一（同一项目编号下可有多张订单）：
+-- ALTER TABLE proj_project DROP INDEX uk_project_no, ADD INDEX idx_project_no (project_no);
+-- ALTER TABLE boq_item ADD COLUMN item_type VARCHAR(32) AFTER row_no, ADD COLUMN source_sheet VARCHAR(64) AFTER item_type;

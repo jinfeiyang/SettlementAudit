@@ -31,10 +31,10 @@ public final class CheckDtos {
                           BigDecimal base, BigDecimal amount) {
     }
 
-    /** 取费核查结果 */
+    /** 取费核查结果；estimatedAmount 为按定额基价估算的直接费，coverage 为可核算行占比（%） */
     public record FeeResult(BigDecimal directCost, BigDecimal laborCost, BigDecimal feeTotal,
                             BigDecimal expectedAmount, BigDecimal settleAmount, BigDecimal deviation,
-                            List<FeeLine> lines) {
+                            BigDecimal estimatedAmount, BigDecimal coverage, List<FeeLine> lines) {
     }
 
     /** 核查结果摘要（落 async_task.result_json，供工作台指标展示） */

@@ -6,6 +6,7 @@ import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.FormulaEvaluator;
 import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -51,9 +52,17 @@ public final class ExcelUtil {
         }
     }
 
-    /** 读取指定工作表为二维字符串表（真实决算文件清单常在「表三甲」等非首个工作表） */
+    /**
+     * 读取指定工作表为二维字符串表（真实决算文件清单常在「表三甲」等非首个工作表）。
+     *
+     * 必须带公式求值器：联通结算模板里合计、工日这类单元格是公式（E6*F6），
+     * 不取值只格式化会拿到公式文本本身，后续按数字解析就会把 "E6*F6" 读成 6。
+     */
     public static List<List<String>> readRows(Workbook wb, int sheetIndex) {
         Sheet sheet = wb.getSheetAt(sheetIndex);
+        FormulaEvaluator evaluator = wb.getCreationHelper().createFormulaEvaluator();
+        evaluator.setIgnoreMissingWorkbooks(true);
+        DataFormatter formatter = new DataFormatter(Locale.CHINA);
         int lastCol = 0;
         for (Row row : sheet) {
             lastCol = Math.max(lastCol, row.getLastCellNum());
@@ -63,7 +72,14 @@ public final class ExcelUtil {
             List<String> cells = new ArrayList<>();
             for (int c = 0; c < lastCol; c++) {
                 Cell cell = row.getCell(c);
-                cells.add(cell == null ? "" : FORMATTER.formatCellValue(cell).trim());
+                String value;
+                try {
+                    value = cell == null ? "" : formatter.formatCellValue(cell, evaluator);
+                } catch (RuntimeException e) {
+                    // 个别公式算不出来（引用外链/未定义名称）时退回原值，避免整张表读不出来
+                    value = cell == null ? "" : formatter.formatCellValue(cell);
+                }
+                cells.add(value == null ? "" : value.trim());
             }
             rows.add(cells);
         }

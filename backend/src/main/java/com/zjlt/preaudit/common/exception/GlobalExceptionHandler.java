@@ -2,6 +2,7 @@ package com.zjlt.preaudit.common.exception;
 
 import com.zjlt.preaudit.common.api.R;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -32,6 +33,13 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public R<Void> handleUpload(MaxUploadSizeExceededException e) {
         return R.fail(400, "上传文件超出大小限制");
+    }
+
+    /** 唯一索引冲突：给出可操作提示，而不是笼统的"系统异常" */
+    @ExceptionHandler(DuplicateKeyException.class)
+    public R<Void> handleDuplicate(DuplicateKeyException e) {
+        log.warn("唯一约束冲突: {}", e.getMessage());
+        return R.fail(400, "数据已存在，请勿重复提交");
     }
 
     @ExceptionHandler(Exception.class)

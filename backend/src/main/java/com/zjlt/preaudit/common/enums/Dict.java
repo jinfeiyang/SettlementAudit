@@ -102,6 +102,18 @@ public final class Dict {
             ENG_LINE, "通信线路",
             ENG_DEVICE, "设备安装");
 
+    /** 清单行类别：区分定额子目工程量与材料设备（甲供/乙供） */
+    public static final String BOQ_QUOTA = "QUOTA";
+    public static final String BOQ_MATERIAL = "MATERIAL";
+    public static final String BOQ_SUPPLY_MATERIAL = "SUPPLY_MATERIAL";
+    public static final String BOQ_SUPPLY_EQUIPMENT = "SUPPLY_EQUIPMENT";
+
+    private static final Map<String, String> BOQ_ITEM_TYPE = Map.of(
+            BOQ_QUOTA, "工程量",
+            BOQ_MATERIAL, "乙供材料",
+            BOQ_SUPPLY_MATERIAL, "甲供材料",
+            BOQ_SUPPLY_EQUIPMENT, "甲供设备");
+
     /** 一期主链路状态流转（允许回退，便于重复核查） */
     private static final Map<String, List<String>> TRANSITIONS = Map.of(
             PROJ_DRAFT, List.of(PROJ_IMPORTED, PROJ_DRAFT),
@@ -137,6 +149,10 @@ public final class Dict {
 
     public static String engType(String code) {
         return label(ENG_TYPE, code);
+    }
+
+    public static String boqItemType(String code) {
+        return label(BOQ_ITEM_TYPE, code);
     }
 
     public static boolean canTransit(String from, String to) {

@@ -1,5 +1,6 @@
 package com.zjlt.preaudit.module.boq.parser;
 
+import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.util.ExcelUtil;
 import com.zjlt.preaudit.common.util.TextUtil;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -11,14 +12,23 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
- * 工程量清单 Excel 解析（A2）：多工作表自动识别 + 表头自适应 + 行号保留 + 可解析率统计。
+ * 工程量清单 Excel 解析（A2）。
  *
- * 真实决算/结算文件通常一个文件多张表（表一汇总 / 表二取费 / 表三甲工程量 …），
- * 清单在「表三甲」等非首个工作表，且前几行是标题、项目名称、建设单位等抬头，
- * 表头下方还有「技工/普工」子表头与 Ⅰ Ⅱ Ⅲ 列标行，故需按列命中数打分选表并过滤列标行。
+ * <p>两条解析路径，自动识别：
+ * <ol>
+ *   <li><b>联通结算模板</b>（表一~表八）：一个文件里清单分散在多张工作表——
+ *       表三甲是定额子目工程量，表八是甲供物资领用明细，两张表必须合并导入并按类别打标，
+ *       否则只挑一张表就丢数据。表四甲（乙供材料）属于辅材目录，审计口径不纳入清单，
+ *       故不导入。</li>
+ *   <li><b>通用清单</b>：单表导入，按表头命中数挑出最像工程量清单的工作表。</li>
+ * </ol>
+ *
+ * <p>行号统一重排为 1..N（多表合并后序号会重复，不能再用原表序号做回溯定位），
+ * 原始来源表名记录在 sourceSheet，便于回到 Excel 核对。
  */
 @Component
 public class BoqExcelParser {
@@ -32,44 +42,233 @@ public class BoqExcelParser {
     /** 仅含符号/罗马数字/纯数字的行（列标行、页脚行） */
     private static final Pattern NOT_MEANINGFUL = Pattern.compile("^[^\\p{IsHan}A-Za-z]+$");
 
+    /** 结算模板特征工作表 */
+    private static final List<String> TEMPLATE_SHEETS = List.of("表三甲", "表四甲", "表八");
+
     public ParseOutcome parse(InputStream in, String filename) {
         try (Workbook wb = ExcelUtil.open(in, filename)) {
-            int sheetCount = wb.getNumberOfSheets();
-            int bestSheet = -1;
-            int bestHeader = -1;
-            int bestScore = 0;
-            List<List<String>> bestRows = null;
-
-            for (int i = 0; i < sheetCount; i++) {
-                List<List<String>> rows = ExcelUtil.readRows(wb, i);
-                if (rows.isEmpty()) {
-                    continue;
-                }
-                int headerRow = ExcelUtil.findHeaderRow(rows, HEADER_KEYWORDS, 12);
-                if (headerRow < 0) {
-                    continue;
-                }
-                int score = scoreSheet(rows, headerRow);
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestSheet = i;
-                    bestHeader = headerRow;
-                    bestRows = rows;
+            if (isSettlementTemplate(wb)) {
+                ParseOutcome outcome = parseSettlementTemplate(wb);
+                if (!outcome.rows().isEmpty()) {
+                    return outcome;
                 }
             }
-            if (bestRows == null || bestScore < 3) {
-                return new ParseOutcome(List.of(), 0, 0,
-                        "未在任何工作表识别到工程量清单表头（需包含：定额/项目编码、项目名称、单位、数量/工程量）；"
-                                + "已扫描 " + sheetCount + " 个工作表", "", false);
-            }
-            String sheetName = ExcelUtil.sheetName(wb, bestSheet);
-            return parseSheet(bestRows, bestHeader, sheetName);
+            return parseSingleSheet(wb);
         } catch (IOException e) {
             return new ParseOutcome(List.of(), 0, 0, "Excel 读取失败：" + e.getMessage(), "", false);
         }
     }
 
-    private ParseOutcome parseSheet(List<List<String>> rows, int headerRow, String sheetName) {
+    // ------------------------------------------------------------------
+    // 联通结算模板（表一~表八）
+    // ------------------------------------------------------------------
+
+    private boolean isSettlementTemplate(Workbook wb) {
+        int hit = 0;
+        for (int i = 0; i < wb.getNumberOfSheets(); i++) {
+            String name = ExcelUtil.sheetName(wb, i);
+            if (TEMPLATE_SHEETS.stream().anyMatch(name::contains)) {
+                hit++;
+            }
+        }
+        return hit >= 2;
+    }
+
+    private ParseOutcome parseSettlementTemplate(Workbook wb) {
+        List<Row> rows = new ArrayList<>();
+        List<String> parts = new ArrayList<>();
+        int candidates = 0;
+        int[] seq = {0};
+
+        int quotaSheet = findSheet(wb, "表三甲");
+        if (quotaSheet >= 0) {
+            List<List<String>> data = ExcelUtil.readRows(wb, quotaSheet);
+            int header = ExcelUtil.findHeaderRow(data, HEADER_KEYWORDS, 12);
+            if (header >= 0) {
+                int before = rows.size();
+                candidates += parseQuotaSheet(data, header, ExcelUtil.sheetName(wb, quotaSheet), rows, seq);
+                parts.add("表三甲 工程量 " + (rows.size() - before) + " 条");
+            }
+        }
+
+        int supplySheet = findSheet(wb, "表八");
+        if (supplySheet >= 0) {
+            List<List<String>> data = ExcelUtil.readRows(wb, supplySheet);
+            int before = rows.size();
+            candidates += parseSupplySheet(data, ExcelUtil.sheetName(wb, supplySheet), rows, seq);
+            if (rows.size() > before) {
+                parts.add("表八 甲供物资 " + (rows.size() - before) + " 条");
+            }
+        }
+
+        if (rows.isEmpty()) {
+            return new ParseOutcome(List.of(), 0, 0, "识别为联通结算模板，但表三甲/表八 均未解析出有效数据行", "", false);
+        }
+        BigDecimal rate = candidates == 0 ? BigDecimal.ZERO
+                : BigDecimal.valueOf(rows.size() * 100.0 / candidates).setScale(2, RoundingMode.HALF_UP);
+        boolean hasPrice = rows.stream().anyMatch(r -> r.unitPrice() != null || r.totalPrice() != null);
+        String message = String.format("联通结算模板：%s，合计 %d 条（行号按导入顺序重排）",
+                String.join("、", parts), rows.size());
+        return new ParseOutcome(rows, candidates, rate.doubleValue(), message, "表三甲等", hasPrice);
+    }
+
+    /** 表三甲：定额子目工程量（定额编号 / 项目名称 / 单位 / 数量 / 合计工日） */
+    private int parseQuotaSheet(List<List<String>> rows, int headerRow, String sheetName,
+                                List<Row> out, int[] seq) {
+        List<String> header = rows.get(headerRow);
+        int idxCode = ExcelUtil.findColumn(header, "定额编号", "项目编码", "编号");
+        int idxName = ExcelUtil.findColumn(header, "项目名称", "名称");
+        int idxUnit = ExcelUtil.findColumn(header, "单位");
+        int idxQty = ExcelUtil.findColumn(header, "数量", "工程量");
+        int idxTotalGroup = ExcelUtil.findColumn(header, "合计值");
+        int idxSkill = idxTotalGroup >= 0 ? idxTotalGroup : ExcelUtil.findColumn(header, "技工");
+        int idxNormal = idxTotalGroup >= 0 ? idxTotalGroup + 1 : ExcelUtil.findColumn(header, "普工");
+
+        int candidates = 0;
+        for (int i = headerRow + 1; i < rows.size(); i++) {
+            List<String> row = rows.get(i);
+            String name = ExcelUtil.cell(row, idxName);
+            if (name == null || isNoise(name)) {
+                continue;
+            }
+            BigDecimal qty = TextUtil.firstNumber(ExcelUtil.cell(row, idxQty));
+            if (qty == null) {
+                continue;
+            }
+            candidates++;
+            String code = ExcelUtil.cell(row, idxCode);
+            String feature = workDayFeature(ExcelUtil.cell(row, idxSkill), ExcelUtil.cell(row, idxNormal));
+            // 序号列只用于人工核对，导入行号统一重排，避免多表合并后重号
+            out.add(new Row(++seq[0], Dict.BOQ_QUOTA, sheetName, code, name, feature,
+                    ExcelUtil.cell(row, idxUnit), qty, null, null));
+        }
+        return candidates;
+    }
+
+    private String workDayFeature(String skill, String normal) {
+        BigDecimal s = TextUtil.firstNumber(skill);
+        BigDecimal n = TextUtil.firstNumber(normal);
+        if (s == null && n == null) {
+            return null;
+        }
+        return "合计工日 技工 " + plain(s) + " / 普工 " + plain(n);
+    }
+
+    /**
+     * 表八：甲供工程物资领用明细（报审：单价/领出量/实用量/剩余量）。
+     * 分「一 甲供材料费」「二 甲供设备费」两段，按段标记给行打类别。
+     */
+    private int parseSupplySheet(List<List<String>> rows, String sheetName, List<Row> out, int[] seq) {
+        int header = findSupplyHeader(rows);
+        if (header < 0) {
+            return 0;
+        }
+        int candidates = 0;
+        String itemType = Dict.BOQ_SUPPLY_MATERIAL;
+        for (int i = header + 1; i < rows.size(); i++) {
+            List<String> row = rows.get(i);
+            String col0 = normalize(ExcelUtil.cell(row, 0));
+            String col1 = normalize(ExcelUtil.cell(row, 1));
+
+            if (col1.contains("甲供材料费") && !col1.contains("合计")) {
+                itemType = Dict.BOQ_SUPPLY_MATERIAL;
+                continue;
+            }
+            if (col1.contains("甲供设备费") && !col1.contains("合计")) {
+                itemType = Dict.BOQ_SUPPLY_EQUIPMENT;
+                continue;
+            }
+            if (col1.contains("合计") || col1.contains("签章") || col0.contains("签章")) {
+                continue;
+            }
+            String name = ExcelUtil.cell(row, 1);
+            if (name == null || isNoise(name)) {
+                continue;
+            }
+            BigDecimal qty = TextUtil.firstNumber(ExcelUtil.cell(row, 7));  // 实用量
+            if (qty == null) {
+                qty = TextUtil.firstNumber(ExcelUtil.cell(row, 5));         // 退回领出量
+            }
+            if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            candidates++;
+            BigDecimal price = TextUtil.firstNumber(ExcelUtil.cell(row, 4));
+            BigDecimal amount = TextUtil.firstNumber(ExcelUtil.cell(row, 8));
+            String spec = ExcelUtil.cell(row, 2);
+            out.add(new Row(++seq[0], itemType, sheetName, null, name,
+                    supplyFeature(spec, ExcelUtil.cell(row, 5), ExcelUtil.cell(row, 9)),
+                    ExcelUtil.cell(row, 3), qty, price, amount));
+        }
+        return candidates;
+    }
+
+    /** 表八表头：第 0 列是「序号」且同一行有「工程物资名称」 */
+    private int findSupplyHeader(List<List<String>> rows) {
+        for (int i = 0; i < Math.min(20, rows.size()); i++) {
+            List<String> row = rows.get(i);
+            if (row.size() > 1 && "序号".equals(normalize(ExcelUtil.cell(row, 0)))
+                    && normalize(ExcelUtil.cell(row, 1)).contains("工程物资名称")) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** 甲供物资特征：规格 + 领出/剩余量（剩余不为 0 是审计关注点） */
+    private String supplyFeature(String spec, String issued, String remain) {
+        StringBuilder sb = new StringBuilder();
+        if (spec != null) {
+            sb.append(spec);
+        }
+        BigDecimal issuedNum = TextUtil.firstNumber(issued);
+        BigDecimal remainNum = TextUtil.firstNumber(remain);
+        if (issuedNum != null || remainNum != null) {
+            if (sb.length() > 0) {
+                sb.append('；');
+            }
+            sb.append("领出 ").append(plain(issuedNum)).append("，剩余 ").append(plain(remainNum));
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    // ------------------------------------------------------------------
+    // 通用清单（单表）
+    // ------------------------------------------------------------------
+
+    private ParseOutcome parseSingleSheet(Workbook wb) {
+        int sheetCount = wb.getNumberOfSheets();
+        int bestSheet = -1;
+        int bestHeader = -1;
+        int bestScore = 0;
+        List<List<String>> bestRows = null;
+
+        for (int i = 0; i < sheetCount; i++) {
+            List<List<String>> rows = ExcelUtil.readRows(wb, i);
+            if (rows.isEmpty()) {
+                continue;
+            }
+            int headerRow = ExcelUtil.findHeaderRow(rows, HEADER_KEYWORDS, 12);
+            if (headerRow < 0) {
+                continue;
+            }
+            int score = scoreSheet(rows, headerRow);
+            if (score > bestScore) {
+                bestScore = score;
+                bestSheet = i;
+                bestHeader = headerRow;
+                bestRows = rows;
+            }
+        }
+        if (bestRows == null || bestScore < 3) {
+            return new ParseOutcome(List.of(), 0, 0,
+                    "未在任何工作表识别到工程量清单表头（需包含：定额/项目编码、项目名称、单位、数量/工程量）；"
+                            + "已扫描 " + sheetCount + " 个工作表", "", false);
+        }
+        return parseGenericSheet(bestRows, bestHeader, ExcelUtil.sheetName(wb, bestSheet));
+    }
+
+    private ParseOutcome parseGenericSheet(List<List<String>> rows, int headerRow, String sheetName) {
         List<String> header = rows.get(headerRow);
         int idxNo = ExcelUtil.findColumn(header, "序号", "行号");
         int idxCode = ExcelUtil.findColumn(header, "定额编号", "项目编码", "清单编码", "子目编码", "编号");
@@ -109,8 +308,8 @@ public class BoqExcelParser {
                 total = qty.multiply(price).setScale(2, RoundingMode.HALF_UP);
             }
             Integer rowNo = parseRowNo(ExcelUtil.cell(row, idxNo), i + 1);
-            parsed.add(new Row(rowNo, code, name, ExcelUtil.cell(row, idxFeature),
-                    ExcelUtil.cell(row, idxUnit), qty, price, total));
+            parsed.add(new Row(rowNo, Dict.BOQ_QUOTA, sheetName, code, name,
+                    ExcelUtil.cell(row, idxFeature), ExcelUtil.cell(row, idxUnit), qty, price, total));
         }
         BigDecimal rate = candidates == 0 ? BigDecimal.ZERO
                 : BigDecimal.valueOf(parsed.size() * 100.0 / candidates).setScale(2, RoundingMode.HALF_UP);
@@ -167,6 +366,29 @@ public class BoqExcelParser {
         return score;
     }
 
+    // ------------------------------------------------------------------
+    // 公共
+    // ------------------------------------------------------------------
+
+    private int findSheet(Workbook wb, String hint) {
+        String target = hint.toLowerCase(Locale.ROOT).replace(" ", "");
+        for (int i = 0; i < wb.getNumberOfSheets(); i++) {
+            String name = ExcelUtil.sheetName(wb, i).toLowerCase(Locale.ROOT).replace(" ", "");
+            if (name.contains(target)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String normalize(String text) {
+        return text == null ? "" : text.replaceAll("\\s", "");
+    }
+
+    private String plain(BigDecimal value) {
+        return value == null ? "-" : value.stripTrailingZeros().toPlainString();
+    }
+
     /** 非清单数据行：纯符号/罗马数字列标行、合计小计行 */
     private boolean isNoise(String text) {
         if (text == null) {
@@ -187,8 +409,9 @@ public class BoqExcelParser {
         return n.intValue();
     }
 
-    public record Row(Integer rowNo, String itemCode, String itemName, String featureDesc,
-                      String unit, BigDecimal quantity, BigDecimal unitPrice, BigDecimal totalPrice) {
+    public record Row(Integer rowNo, String itemType, String sourceSheet, String itemCode, String itemName,
+                      String featureDesc, String unit, BigDecimal quantity, BigDecimal unitPrice,
+                      BigDecimal totalPrice) {
     }
 
     public record ParseOutcome(List<Row> rows, int candidateRows, double parseRate, String message,

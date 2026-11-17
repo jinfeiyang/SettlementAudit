@@ -19,6 +19,10 @@ public class BoqItem extends BaseEntity {
     private Long sourceFileId;
     /** 清单行号（回溯定位用） */
     private Integer rowNo;
+    /** 行类别：QUOTA 工程量 / MATERIAL 乙供材料 / SUPPLY_MATERIAL 甲供材料 / SUPPLY_EQUIPMENT 甲供设备 */
+    private String itemType;
+    /** 来源工作表（表三甲/表四甲/表八），多表合并导入后用于回溯 */
+    private String sourceSheet;
     private String itemCode;
     private String itemName;
     private String featureDesc;

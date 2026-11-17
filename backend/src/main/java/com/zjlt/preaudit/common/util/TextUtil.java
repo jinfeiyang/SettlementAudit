@@ -165,6 +165,24 @@ public final class TextUtil {
         return null;
     }
 
+    /**
+     * 是否像定额编号（如 TXL4-033 / TYS2-011）。
+     * 清单里带了定额编号就说明已经套过定额，不需要再按名称去猜；
+     * 但要排除纯数字的清单编码（030901001001）和空值。
+     */
+    public static boolean isQuotaCode(String raw) {
+        if (raw == null) {
+            return false;
+        }
+        String code = raw.replaceAll("\\s", "");
+        if (code.isEmpty() || code.length() > 24) {
+            return false;
+        }
+        boolean hasLetter = code.matches(".*[A-Za-z].*");
+        boolean hasDash = code.matches(".*[-–—_].*");
+        return hasLetter && hasDash;
+    }
+
     public static String nullToEmpty(String s) {
         return s == null ? "" : s;
     }

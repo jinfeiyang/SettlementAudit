@@ -32,6 +32,23 @@ public class QuotaMatchService {
     }
 
     public CheckDtos.MatchResult match(BoqItem item, List<RuleQuota> quotas) {
+        // 清单自带定额编号：说明已经套过定额，直接按已套用处理。
+        // 规则库里有同编号就补出定额名称，没有也不能报「未匹配定额」——那是清单缺定额编号才该报的问题。
+        String ownCode = item.getItemCode() == null ? null : item.getItemCode().trim();
+        if (TextUtil.isQuotaCode(ownCode)) {
+            if (quotas != null) {
+                for (RuleQuota q : quotas) {
+                    if (ownCode.equalsIgnoreCase(TextUtil.nullToEmpty(q.getQuotaCode()).trim())) {
+                        return exact(q, "清单已载明定额编号 " + ownCode + "，与规则库一致");
+                    }
+                }
+            }
+            CheckDtos.QuotaCandidate candidate = new CheckDtos.QuotaCandidate(ownCode,
+                    TextUtil.nullToEmpty(item.getItemName()), item.getUnit(), null, BigDecimal.ONE,
+                    "清单已载明定额编号 " + ownCode + "，规则库暂无该子目");
+            return new CheckDtos.MatchResult(1, BigDecimal.ONE, List.of(candidate), true,
+                    "清单已载明定额编号，按已套用处理");
+        }
         if (quotas == null || quotas.isEmpty()) {
             return new CheckDtos.MatchResult(3, BigDecimal.ZERO, List.of(), false, "规则库中无可用定额子目");
         }

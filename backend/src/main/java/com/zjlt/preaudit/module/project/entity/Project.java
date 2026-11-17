@@ -17,8 +17,18 @@ public class Project extends BaseEntity {
 
     private String projectNo;
     private String projectName;
-    /** LINE 线路 / DEVICE 设备安装 */
+    /** LINE 线路 / DEVICE 设备安装（页面暂不展示） */
     private String engType;
+    /** 合同编号 */
+    private String contractNo;
+    /** 订单编号 */
+    private String orderNo;
+    /** 施工单位 */
+    private String builderUnit;
+    /** 监理单位 */
+    private String supervisorUnit;
+    /** 施工费（元，不含税） */
+    private BigDecimal constructionFee;
     private String city;
     private Long ownerUserId;
     /** 结算送审金额 */

@@ -10,7 +10,8 @@ public final class BoqDtos {
     private BoqDtos() {
     }
 
-    public record ItemVO(Long id, Long projectId, Integer rowNo, String itemCode, String itemName,
+    public record ItemVO(Long id, Long projectId, Integer rowNo, String itemType, String itemTypeName,
+                         String sourceSheet, String itemCode, String itemName,
                          String featureDesc, String unit, BigDecimal quantity, BigDecimal unitPrice,
                          BigDecimal totalPrice, String stdItemCode, String stdItemName, String engType,
                          String matchQuotaCode, String matchQuotaName, BigDecimal matchScore,

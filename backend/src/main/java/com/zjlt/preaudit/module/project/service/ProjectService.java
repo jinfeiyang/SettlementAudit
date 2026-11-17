@@ -64,17 +64,11 @@ public class ProjectService {
     @Transactional
     public ProjectDtos.ProjectVO create(ProjectDtos.SaveReq req) {
         Project project = new Project();
+        // 项目编号不唯一：同一个项目编号下可以有多张订单
         project.setProjectNo(StringUtils.hasText(req.projectNo()) ? req.projectNo().trim() : generateProjectNo());
-        Long dup = projectMapper.selectCount(Wrappers.<Project>lambdaQuery()
-                .eq(Project::getProjectNo, project.getProjectNo()));
-        if (dup != null && dup > 0) {
-            throw new BizException("项目编号已存在：" + project.getProjectNo());
-        }
         project.setProjectName(req.projectName().trim());
         project.setEngType(normalizeEngType(req.engType()));
-        project.setCity(req.city());
-        project.setSettleAmount(req.settleAmount());
-        project.setRemark(req.remark());
+        applyBusinessFields(project, req);
         project.setStatus(Dict.PROJ_DRAFT);
         project.setOwnerUserId(UserContext.userId());
         projectMapper.insert(project);
@@ -87,11 +81,10 @@ public class ProjectService {
         if (Dict.PROJ_ARCHIVED.equals(project.getStatus())) {
             throw new BizException("已归档项目不可修改");
         }
+        applyProjectNo(project, req.projectNo());
         project.setProjectName(req.projectName().trim());
         project.setEngType(normalizeEngType(req.engType()));
-        project.setCity(req.city());
-        project.setSettleAmount(req.settleAmount());
-        project.setRemark(req.remark());
+        applyBusinessFields(project, req);
         projectMapper.updateById(project);
         return toVO(project);
     }
@@ -227,9 +220,34 @@ public class ProjectService {
                 + String.format("%03d", count + 1);
     }
 
+    /** 项目编号允许编辑：留空则保持原编号，不做重号校验（同一编号下可有多张订单） */
+    private void applyProjectNo(Project project, String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return;
+        }
+        project.setProjectNo(raw.trim());
+    }
+
+    /** 工程背景信息（合同/订单编号、参建单位、施工费）统一在这里落库，空串按 null 存 */
+    private void applyBusinessFields(Project project, ProjectDtos.SaveReq req) {
+        project.setContractNo(blankToNull(req.contractNo()));
+        project.setOrderNo(blankToNull(req.orderNo()));
+        project.setBuilderUnit(blankToNull(req.builderUnit()));
+        project.setSupervisorUnit(blankToNull(req.supervisorUnit()));
+        project.setConstructionFee(req.constructionFee());
+        project.setCity(blankToNull(req.city()));
+        project.setSettleAmount(req.settleAmount());
+        project.setRemark(blankToNull(req.remark()));
+    }
+
+    private String blankToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
     private ProjectDtos.ProjectVO toVO(Project p) {
         return new ProjectDtos.ProjectVO(p.getId(), p.getProjectNo(), p.getProjectName(), p.getEngType(),
-                Dict.engType(p.getEngType()), p.getCity(), p.getSettleAmount(), p.getStatus(),
+                Dict.engType(p.getEngType()), p.getContractNo(), p.getOrderNo(), p.getBuilderUnit(),
+                p.getSupervisorUnit(), p.getConstructionFee(), p.getCity(), p.getSettleAmount(), p.getStatus(),
                 Dict.projectStatus(p.getStatus()), p.getRemark(), p.getCreateTime(), p.getUpdateTime());
     }
 }

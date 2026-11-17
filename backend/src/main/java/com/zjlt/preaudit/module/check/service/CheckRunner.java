@@ -101,18 +101,25 @@ public class CheckRunner {
         List<Issue> issues = new ArrayList<>();
         int hitTop3 = 0;
         int matchedExact = 0;
+        int quotaRows = 0;
         for (int i = 0; i < items.size(); i++) {
             BoqItem item = items.get(i);
-            CheckDtos.MatchResult match = quotaMatchService.match(item, quotas);
-            // 指标口径：前三级命中 = 精确匹配(1) 或 语义召回达到阈值(2) 的行占比
-            if (match.level() <= 2) {
-                hitTop3++;
-                if (match.level() == 1) {
-                    matchedExact++;
+            // 甲供材料/甲供设备是物资行，本身不套定额：不参与定额匹配，也不报「未匹配定额」
+            boolean quotaRow = item.getItemType() == null || Dict.BOQ_QUOTA.equals(item.getItemType());
+            CheckDtos.MatchResult match = null;
+            if (quotaRow) {
+                quotaRows++;
+                match = quotaMatchService.match(item, quotas);
+                // 指标口径：前三级命中 = 精确匹配(1) 或 语义召回达到阈值(2) 的行占比
+                if (match.level() <= 2) {
+                    hitTop3++;
+                    if (match.level() == 1) {
+                        matchedExact++;
+                    }
                 }
+                applyMatch(item, match);
+                boqItemMapper.updateById(item);
             }
-            applyMatch(item, match);
-            boqItemMapper.updateById(item);
             collectItemIssues(project.getId(), item, match, issues);
             if (i % 10 == 0 || i == items.size() - 1) {
                 task.setProgress(Math.min(85, 5 + (int) ((i + 1) * 80.0 / items.size())));
@@ -132,7 +139,8 @@ public class CheckRunner {
         int high = (int) issues.stream().filter(x -> x.getLevel() == Dict.LEVEL_HIGH).count();
         int medium = (int) issues.stream().filter(x -> x.getLevel() == Dict.LEVEL_MEDIUM).count();
         int low = (int) issues.stream().filter(x -> x.getLevel() == Dict.LEVEL_LOW).count();
-        BigDecimal hitRate = BigDecimal.valueOf(hitTop3 * 100.0 / items.size()).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal hitRate = quotaRows == 0 ? BigDecimal.ZERO.setScale(2)
+                : BigDecimal.valueOf(hitTop3 * 100.0 / quotaRows).setScale(2, RoundingMode.HALF_UP);
 
         CheckDtos.CheckSummary summary = new CheckDtos.CheckSummary(items.size(), issues.size(), high, medium, low,
                 hitRate, feeResult.directCost(), feeResult.feeTotal(), feeResult.expectedAmount(),
@@ -175,16 +183,25 @@ public class CheckRunner {
         String where = "清单第 " + (item.getRowNo() == null ? "?" : item.getRowNo()) + " 行「"
                 + TextUtil.nullToEmpty(item.getItemName()) + "」";
 
-        // 工程量与金额一致性（确定性）
+        boolean materialRow = item.getItemType() != null && !Dict.BOQ_QUOTA.equals(item.getItemType());
+
+        // 工程量与金额一致性（确定性，只核清单自身数据，不涉及图纸）
         if (item.getQuantity() == null || item.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
             issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QTY, Dict.LEVEL_HIGH, "B0-QTY",
                     "工程量为空或非正数", where + " 工程量为 " + item.getQuantity() + "，应补充实际工程量。"));
         }
-        if (item.getUnitPrice() == null || item.getUnitPrice().compareTo(BigDecimal.ZERO) <= 0) {
+        // 单价/合价只有清单本身带价才有意义：表三甲这类无价清单没有单价列，
+        // 甲供物资的金额是领用金额（按领出量计），都不能按「数量×单价」去套。
+        if (!materialRow && item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) <= 0) {
             issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QTY, Dict.LEVEL_MEDIUM, "B0-PRICE",
-                    "综合单价缺失或为 0", where + " 综合单价为空或 0，请核对清单与结算书。"));
+                    "综合单价为 0", where + " 综合单价列填的是 0，请核对清单与结算书。"));
         }
-        if (item.getQuantity() != null && item.getUnitPrice() != null && item.getTotalPrice() != null) {
+        if (!materialRow && item.getUnitPrice() == null && item.getTotalPrice() != null) {
+            issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QTY, Dict.LEVEL_MEDIUM, "B0-PRICE",
+                    "有合价但缺少综合单价",
+                    where + " 合价 " + item.getTotalPrice().toPlainString() + " 元，但综合单价为空，无法核算单价合理性。"));
+        }
+        if (!materialRow && item.getQuantity() != null && item.getUnitPrice() != null && item.getTotalPrice() != null) {
             BigDecimal expected = item.getQuantity().multiply(item.getUnitPrice()).setScale(2, RoundingMode.HALF_UP);
             BigDecimal diff = item.getTotalPrice().subtract(expected).abs();
             if (diff.compareTo(amountTolerance) > 0) {
@@ -195,29 +212,31 @@ public class CheckRunner {
             }
         }
 
-        // 定额套用（B1）
-        CheckDtos.QuotaCandidate best = match.best();
-        String candidates = match.candidates().stream()
-                .map(c -> c.quotaCode() + " " + c.quotaName() + "（" + c.score().toPlainString() + "）")
-                .reduce((a, b) -> a + "；" + b).orElse("无");
-        if (match.level() == 3) {
-            issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_HIGH, "B1-MISS",
-                    "未匹配到定额子目（错套/缺套风险）",
-                    where + " 未找到可信定额子目。" + match.message() + "。候选：" + candidates
-                            + "。建议人工指定定额子目或补充规则库。"));
-        } else if (match.level() == 2) {
-            issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_MEDIUM, "B1-SEMANTIC",
-                    "定额套用需复核（语义召回命中）",
-                    where + " 最佳推荐 " + best.quotaCode() + " " + best.quotaName()
-                            + "（置信度 " + match.bestScore().toPlainString() + "）。前三候选：" + candidates
-                            + "。请确认定额套用与项目特征是否一致。"));
-        }
-        // 三级：换算系数校验
-        if (best != null && !match.unitConvertible()) {
-            issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_MEDIUM, "B1-CONVERT",
-                    "计量单位与推荐定额不一致，需确认换算系数",
-                    where + " 清单单位「" + item.getUnit() + "」，推荐定额 " + best.quotaCode()
-                            + " 单位为「" + best.unit() + "」，规则库未登记换算关系，无法自动核算换算结果。"));
+        // 定额套用（B1）：只有定额子目行才判套用；甲供物资行不套定额，不产出错套/缺套疑点
+        if (!materialRow && match != null) {
+            CheckDtos.QuotaCandidate best = match.best();
+            String candidates = match.candidates().stream()
+                    .map(c -> c.quotaCode() + " " + c.quotaName() + "（" + c.score().toPlainString() + "）")
+                    .reduce((a, b) -> a + "；" + b).orElse("无");
+            if (match.level() == 3) {
+                issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_HIGH, "B1-MISS",
+                        "未匹配到定额子目（错套/缺套风险）",
+                        where + " 清单未填定额编号，" + match.message() + "。候选：" + candidates
+                                + "。建议补填定额编号，或在「规则库-定额子目」补充后再核查。"));
+            } else if (match.level() == 2) {
+                issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_MEDIUM, "B1-SEMANTIC",
+                        "定额套用需复核（语义召回命中）",
+                        where + " 最佳推荐 " + best.quotaCode() + " " + best.quotaName()
+                                + "（置信度 " + match.bestScore().toPlainString() + "）。前三候选：" + candidates
+                                + "。请确认定额套用与项目特征是否一致。"));
+            }
+            // 三级：换算系数校验
+            if (best != null && !match.unitConvertible()) {
+                issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_MEDIUM, "B1-CONVERT",
+                        "计量单位与推荐定额不一致，需确认换算系数",
+                        where + " 清单单位「" + item.getUnit() + "」，推荐定额 " + best.quotaCode()
+                                + " 单位为「" + best.unit() + "」，规则库未登记换算关系，无法自动核算换算结果。"));
+            }
         }
     }
 
@@ -240,12 +259,24 @@ public class CheckRunner {
             issue.setProjectId(projectId);
             issue.setIssueType(Dict.ISSUE_FEE);
             issue.setLevel(Dict.LEVEL_LOW);
-            issue.setRuleCode("B2-NO-SETTLE");
             issue.setRefType("PROJECT");
-            issue.setTitle("项目未填写结算送审金额，取费偏差校验未执行");
-            issue.setDetail("已按现行取费规则核算应计金额 " + fee.expectedAmount().toPlainString()
-                    + " 元（直接费 " + fee.directCost().toPlainString() + " 元，取费 " + fee.feeTotal().toPlainString()
-                    + " 元）。请在项目信息中填写结算送审金额后重新核查。");
+            if (fee.settleAmount() == null) {
+                issue.setRuleCode("B2-NO-SETTLE");
+                issue.setTitle("项目未填写结算送审金额，取费偏差校验未执行");
+                issue.setDetail("已按现行取费规则核算应计金额 " + fee.expectedAmount().toPlainString()
+                        + " 元（直接费 " + fee.directCost().toPlainString() + " 元，取费 "
+                        + fee.feeTotal().toPlainString()
+                        + " 元）。请在项目信息中填写结算送审金额后重新核查。");
+            } else {
+                // 清单大量行既没价、也套不到有基价的定额：基数算不准，不能拿偏差下结论
+                issue.setRuleCode("B2-NO-PRICE");
+                issue.setTitle("清单价格信息不足，取费偏差未判定");
+                issue.setDetail("清单可核算行占比仅 " + fee.coverage().toPlainString() + "%（低于 50%），"
+                        + "按定额基价估算的直接费 " + fee.estimatedAmount().toPlainString() + " 元，"
+                        + "核算直接费合计 " + fee.directCost().toPlainString() + " 元。"
+                        + "表三甲这类只有定额编号和工程量的清单需要单价/合价才能核算取费，"
+                        + "请补全清单价格信息或在「规则库-定额子目」补齐定额基价后重新核查。");
+            }
             issue.setReviewStatus(Dict.REVIEW_PENDING);
             issues.add(issue);
             return;
@@ -257,7 +288,9 @@ public class CheckRunner {
         int level = abs.compareTo(feeHighThreshold) > 0 ? Dict.LEVEL_HIGH : Dict.LEVEL_MEDIUM;
         StringBuilder detail = new StringBuilder();
         detail.append("按现行取费规则核算：直接费 ").append(fee.directCost().toPlainString())
-                .append(" 元，人工费基数 ").append(fee.laborCost().toPlainString())
+                .append(" 元（其中按定额基价估算 ").append(fee.estimatedAmount().toPlainString())
+                .append(" 元，可核算行占比 ").append(fee.coverage().toPlainString()).append("%）")
+                .append("，人工费基数 ").append(fee.laborCost().toPlainString())
                 .append(" 元，取费合计 ").append(fee.feeTotal().toPlainString())
                 .append(" 元，应计合计 ").append(fee.expectedAmount().toPlainString())
                 .append(" 元；送审金额 ").append(fee.settleAmount().toPlainString())

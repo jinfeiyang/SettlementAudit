@@ -61,7 +61,10 @@ public class BoqService {
                     project.getEngType(), Dict.engType(project.getEngType()), outcome.message());
         }
 
-        Map<String, RuleQuota> quotaByName = loadQuotaIndex();
+        List<RuleQuota> quotas = ruleQuotaMapper.selectList(Wrappers.<RuleQuota>lambdaQuery()
+                .eq(RuleQuota::getStatus, 1));
+        Map<String, RuleQuota> quotaByName = indexQuotaByName(quotas);
+        Map<String, RuleQuota> quotaByCode = indexQuotaByCode(quotas);
         List<BoqItem> items = new ArrayList<>(outcome.rows().size());
         Map<String, Integer> engTypeCount = new HashMap<>();
         for (BoqExcelParser.Row row : outcome.rows()) {
@@ -69,6 +72,8 @@ public class BoqService {
             item.setProjectId(projectId);
             item.setSourceFileId(fileId);
             item.setRowNo(row.rowNo());
+            item.setItemType(row.itemType());
+            item.setSourceSheet(row.sourceSheet());
             item.setItemCode(row.itemCode());
             item.setItemName(TextUtil.truncate(row.itemName(), 250));
             item.setFeatureDesc(row.featureDesc());
@@ -83,9 +88,12 @@ public class BoqService {
             if (engType != null) {
                 engTypeCount.merge(engType, 1, Integer::sum);
             }
-            // 一级精确匹配：名称+单位一致即认定标准化成功
-            RuleQuota exact = quotaByName.get(quotaKey(stdName, row.unit()));
-            if (exact == null) {
+            // 一级精确匹配：名称+单位一致即认定标准化成功。
+            // 材料/甲供物资行不参与定额匹配（它们的名称是物资名，套不到定额子目上）
+            RuleQuota exact = Dict.BOQ_QUOTA.equals(row.itemType())
+                    ? quotaByName.get(quotaKey(stdName, row.unit()))
+                    : null;
+            if (exact == null && Dict.BOQ_QUOTA.equals(row.itemType())) {
                 exact = quotaByName.get(quotaKey(stdName, null));
             }
             if (exact != null) {
@@ -97,6 +105,22 @@ public class BoqService {
                 item.setMatchLevel(1);
                 if (item.getEngType() == null) {
                     item.setEngType(exact.getEngType());
+                }
+            } else if (Dict.BOQ_QUOTA.equals(row.itemType()) && TextUtil.isQuotaCode(row.itemCode())) {
+                // 清单本身带定额编号（表三甲那类）：以清单为准，认定为已套用，
+                // 规则库里有同编号就把定额名称补上，没有也照样算已套用，避免核查时误报缺套。
+                String code = row.itemCode().trim();
+                RuleQuota byCode = quotaByCode.get(TextUtil.normalize(code));
+                item.setStdItemCode(code);
+                item.setMatchQuotaCode(code);
+                item.setMatchScore(new BigDecimal("1.0000"));
+                item.setMatchLevel(1);
+                if (byCode != null) {
+                    item.setStdItemName(TextUtil.truncate(byCode.getQuotaName(), 250));
+                    item.setMatchQuotaName(byCode.getQuotaName());
+                    if (item.getEngType() == null) {
+                        item.setEngType(byCode.getEngType());
+                    }
                 }
             }
             items.add(item);
@@ -113,8 +137,16 @@ public class BoqService {
         }
         projectMapper.updateById(project);
 
+        String typeCounts = items.stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        item -> Dict.boqItemType(item.getItemType()), java.util.LinkedHashMap::new,
+                        java.util.stream.Collectors.counting()))
+                .entrySet().stream()
+                .map(e -> e.getKey() + " " + e.getValue() + " 条")
+                .collect(java.util.stream.Collectors.joining("、"));
         BigDecimal rate = BigDecimal.valueOf(outcome.parseRate()).setScale(2, RoundingMode.HALF_UP);
-        String message = outcome.summary() + (outcome.parseRate() < 95
+        String message = outcome.summary() + (typeCounts.isEmpty() ? "" : "（" + typeCounts + "）")
+                + (outcome.parseRate() < 95
                 ? "；可解析率低于 95%，建议按模板整理表头后重传" : "");
         log.info("项目 {} 清单导入完成：{} 行，可解析率 {}%", projectId, items.size(), rate);
         return new BoqDtos.ImportResult(fileId, outcome.candidateRows(), items.size(), rate,
@@ -163,9 +195,7 @@ public class BoqService {
         return c == null ? 0 : c.intValue();
     }
 
-    private Map<String, RuleQuota> loadQuotaIndex() {
-        List<RuleQuota> quotas = ruleQuotaMapper.selectList(Wrappers.<RuleQuota>lambdaQuery()
-                .eq(RuleQuota::getStatus, 1));
+    private Map<String, RuleQuota> indexQuotaByName(List<RuleQuota> quotas) {
         Map<String, RuleQuota> map = new HashMap<>();
         for (RuleQuota q : quotas) {
             String name = TextUtil.normalize(q.getQuotaName());
@@ -175,12 +205,24 @@ public class BoqService {
         return map;
     }
 
+    /** 定额编号索引：清单自带编号时用来补定额名称 */
+    private Map<String, RuleQuota> indexQuotaByCode(List<RuleQuota> quotas) {
+        Map<String, RuleQuota> map = new HashMap<>();
+        for (RuleQuota q : quotas) {
+            if (q.getQuotaCode() != null) {
+                map.putIfAbsent(TextUtil.normalize(q.getQuotaCode()), q);
+            }
+        }
+        return map;
+    }
+
     private String quotaKey(String normalizedName, String unit) {
         return normalizedName + "|" + (unit == null ? "" : TextUtil.normalizeUnit(unit));
     }
 
     private BoqDtos.ItemVO toVO(BoqItem i) {
-        return new BoqDtos.ItemVO(i.getId(), i.getProjectId(), i.getRowNo(), i.getItemCode(), i.getItemName(),
+        return new BoqDtos.ItemVO(i.getId(), i.getProjectId(), i.getRowNo(), i.getItemType(),
+                Dict.boqItemType(i.getItemType()), i.getSourceSheet(), i.getItemCode(), i.getItemName(),
                 i.getFeatureDesc(), i.getUnit(), i.getQuantity(), i.getUnitPrice(), i.getTotalPrice(),
                 i.getStdItemCode(), i.getStdItemName(), i.getEngType(), i.getMatchQuotaCode(),
                 i.getMatchQuotaName(), i.getMatchScore(), i.getMatchLevel());

@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS proj_project (
   project_no VARCHAR(64) NOT NULL,
   project_name VARCHAR(255) NOT NULL,
   eng_type VARCHAR(32),
+  contract_no VARCHAR(64),
+  order_no VARCHAR(128),
+  builder_unit VARCHAR(255),
+  supervisor_unit VARCHAR(255),
+  construction_fee DECIMAL(18,2),
   city VARCHAR(64),
   owner_user_id BIGINT,
   settle_amount DECIMAL(18,2),
@@ -27,8 +32,7 @@ CREATE TABLE IF NOT EXISTS proj_project (
   remark VARCHAR(512),
   deleted TINYINT NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT uk_project_no UNIQUE (project_no)
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS proj_file (
@@ -53,6 +57,8 @@ CREATE TABLE IF NOT EXISTS boq_item (
   project_id BIGINT NOT NULL,
   source_file_id BIGINT,
   row_no INT,
+  item_type VARCHAR(32),
+  source_sheet VARCHAR(64),
   item_code VARCHAR(64),
   item_name VARCHAR(255),
   feature_desc CLOB,
@@ -173,3 +179,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip VARCHAR(64),
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 增量升级：本地 H2 文件库已存在时，CREATE TABLE IF NOT EXISTS 不会补列，这里补一次
+ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS contract_no VARCHAR(64);
+ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS order_no VARCHAR(128);
+ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS builder_unit VARCHAR(255);
+ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS supervisor_unit VARCHAR(255);
+ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS construction_fee DECIMAL(18,2);
+
+-- 项目编号不唯一：同一项目编号下可有多张订单，去掉历史库上的唯一约束。
+-- 注意必须先删约束（H2 给约束建的是 uk_project_no_INDEX_* 这类索引，直接 DROP INDEX 删不到）
+ALTER TABLE proj_project DROP CONSTRAINT IF EXISTS uk_project_no;
+DROP INDEX IF EXISTS uk_project_no_INDEX_F;
+CREATE INDEX IF NOT EXISTS idx_project_no ON proj_project (project_no);
+
+-- 清单行类别与来源表：多表合并导入后用于区分工程量 / 乙供材料 / 甲供物资
+ALTER TABLE boq_item ADD COLUMN IF NOT EXISTS item_type VARCHAR(32);
+ALTER TABLE boq_item ADD COLUMN IF NOT EXISTS source_sheet VARCHAR(64);
