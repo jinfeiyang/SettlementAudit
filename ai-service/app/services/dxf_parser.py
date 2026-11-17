@@ -35,6 +35,308 @@ ODA_DOWNLOAD_URL = "https://www.opendesign.com/guestfiles/oda_file_converter"
 DEVICE_HINTS = ("设备", "机架", "机柜", "天线", "开关", "电源", "盒", "箱", "盘", "架")
 CABLE_HINTS = ("光缆", "电缆", "纤", "线缆", "线路")
 
+# 图上标注的段长（「5.7」「桥20」「钉65.2余14」这类）。
+# 不少竣工图不单独画光缆图层，长度只写在每段路由线旁边，只能从标注反推。
+# 一行里常并排写好几段（「桥架229.7余5 线槽5余2 钉0.3」），所以按 token 扫而不是整行匹配；
+# 小数只认 1~2 位：坐标（121.241693）也是数字串，靠这条挡掉。
+_LENGTH_KIND_WORDS = ("管道|排管|穿管|加挂|附挂|架空|直埋|墙壁|沿墙|槽道|桥架|过桥|顶管|飞线"
+                      "|引上|引下|桥|钉|余|槽|管|引|埋")
+LENGTH_TOKEN_RE = re.compile(
+    rf"(?P<kind>{_LENGTH_KIND_WORDS})?\s*(?<!\d)(?P<value>\d+(?:\.\d{{1,2}})?)(?![\d.A-Za-z])"
+    r"\s*(?P<unit>m|米)?",
+    re.IGNORECASE,
+)
+# 光缆段的合计：「合计399.5」「合计：470」。图上印了合计就说明这几段光缆已经汇总过。
+LENGTH_TOTAL_RE = re.compile(r"合计\s*[:：]?\s*(?P<value>\d+(?:\.\d{1,2})?)\s*(?:m|米)?",
+                             re.IGNORECASE)
+# 纯段长行里允许残留的字符（分隔符与说明文字）；残留了数字/字母说明这行不是段长标注
+_LENGTH_NOISE_RE = re.compile(r"[A-Za-z0-9]")
+# 敷设方式词的首字：「钉65.2余14」里的"余"是下一段的开头，不是 65.2 的单位
+_LENGTH_KIND_CHARS = frozenset("管排穿加附架直墙沿槽桥过顶飞引埋钉余")
+# 数字后面紧跟汉字基本是规格/单位（成端6芯、1孔、直径20管），不是长度
+_LENGTH_SUFFIX_RE = re.compile(r"^[\u4e00-\u9fa5]")
+# 行里带「芯」的是光缆明细/规格说明，里面的数字是分层汇总，不能当段长
+_ANNOTATION_SPEC_HINT_RE = re.compile(r"芯")
+
+# 标注前缀对应的敷设方式，与前端 cableCategory 的分类键保持一致。
+# 通信线路图上「桥20」「钉4」「引上4」「余10」都是段长，前缀只是敷设方式。
+LENGTH_KIND_MAP = {
+    "管": "pipe", "管道": "pipe", "排管": "pipe", "穿管": "pipe", "顶管": "pipe",
+    "加挂": "overhead", "附挂": "overhead", "架空": "overhead",
+    "直埋": "buried",
+    "墙壁": "wall", "沿墙": "wall", "钉": "wall",
+    "槽道": "duct", "桥架": "duct", "桥": "duct", "过桥": "duct", "槽": "duct",
+    "引上": "other", "引下": "other", "余": "other", "飞线": "other",
+}
+
+
+def parse_length_labels(text: str) -> tuple[list[tuple[float, str, bool]], list[tuple[float, bool]]]:
+    """把一行标注解析成 (逐段长度, [(合计值, 是否纯合计行)])。
+
+    逐段长度只在「整行都是段长」时才采信：去掉段长 token 后还剩文字或数字，说明这行
+    是别的东西（「成端6芯」「121.28440」「3号楼B1F弱电间」），数字不是长度。
+    合计值不受这条限制——它是明确写着"合计"的汇总行，前后带说明文字也照样取；
+    「纯合计行」（整行除合计外没别的）才算一层完整汇总，混在明细里的合计只作参考，
+    否则"每段光缆合计 + 按芯数汇总的合计"会被加两遍。
+    """
+    line = text or ""
+    total_matches = [m for m in LENGTH_TOTAL_RE.finditer(line)
+                     if 0.5 <= float(m.group("value")) <= 10000]
+    totals = [(float(m.group("value")), False) for m in total_matches]
+
+    rest = LENGTH_TOTAL_RE.sub(" ", line)
+    spans: list[tuple[int, int]] = []
+    tokens: list[tuple[float, str, bool, bool]] = []  # (值, 敷设方式, 是否整数标注, 有无前缀)
+    for match in LENGTH_TOKEN_RE.finditer(rest):
+        tail = rest[match.end():match.end() + 1]
+        if not match.group("unit") and tail and _LENGTH_SUFFIX_RE.match(tail) \
+                and tail not in _LENGTH_KIND_CHARS:
+            continue  # 「成端6芯」「1孔」「24芯」：数字后面直接跟汉字，是规格不是长度
+        # 采信与否都从"残留判定"里扣掉命中片段：「钉0.3」这种太短的段长不该因此把整行判死
+        spans.append(match.span())
+        value = float(match.group("value"))
+        if not 0.5 <= value <= 10000:
+            continue
+        raw = match.group("value")
+        has_unit = bool(match.group("unit"))
+        prefix = (match.group("kind") or "").strip()
+        kind = LENGTH_KIND_MAP.get(prefix, "")
+        tokens.append((value, kind, "." not in raw and not has_unit, bool(prefix)))
+
+    pieces, cursor = [], 0
+    for start, end in spans:
+        pieces.append(rest[cursor:start])
+        cursor = end
+    pieces.append(rest[cursor:])
+    leftover = "".join(pieces).strip()
+    if _LENGTH_NOISE_RE.search(leftover):
+        # 这行还夹着别的数字/字母：段长不可信，合计也只是"明细里的汇总"，不算完整一层
+        return [], totals
+    if _ANNOTATION_SPEC_HINT_RE.search(leftover):
+        # 带"芯"的行是光缆明细/规格说明（24芯*12 管1025.7+25…），数字是分层汇总，不是段长
+        return [], totals
+
+    # 没写敷设方式的数字只有"整行就一个数"才算段长：
+    # 「5.7」「桥20」是段长，「黄岩朱砂街红三路1」「开挖1」「硅1」里的 1、2 是站名/孔数
+    pure_line = not leftover
+    segments = [(value, kind, is_int) for value, kind, is_int, has_prefix in tokens
+                if has_prefix or pure_line]
+    totals = [(value, True) for value, _ in totals]
+    return segments, totals
+
+
+# MTEXT 里的控制码：\P 换行、\fSimSun|b0; 字体、{\...} 分组
+_MTEXT_CODE_RE = re.compile(r"\\[A-Za-z][^;\\]*;?|[{}]")
+
+
+def clean_annotation(text: str) -> str:
+    """清掉 MTEXT 控制码，避免「5.7\\P」这种带格式的标注漏识别。"""
+    cleaned = (text or "").replace("\\P", "\n").replace("\\p", "\n")
+    cleaned = _MTEXT_CODE_RE.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _filter_table_numbers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    表格里的序号是 1、2、3… 连号，图号/编号又总挤在一起，按这两条把整数剔掉；
+    小数标注（5.7、453.7）直接保留，整数只有不成连号、周围也没有一大堆数字时才当段长。
+    """
+    if not items:
+        return []
+    # 按图层分组：表格里的序号通常和段长标注不在同一层，分层判断能保住「10」「1」这种整数段长
+    by_layer: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        by_layer.setdefault(item["layer"], []).append(item)
+
+    kept: list[dict[str, Any]] = []
+    for layer_items in by_layer.values():
+        # 连号检测：同一图层里出现 4 个以上连续整数，基本就是表格序号
+        int_values = sorted({item["value"] for item in layer_items if item["isInt"]})
+        run_drop: set[float] = set()
+        start = 0
+        for index in range(1, len(int_values) + 1):
+            if index == len(int_values) or int_values[index] != int_values[index - 1] + 1:
+                if index - start >= 4:
+                    run_drop.update(int_values[start:index])
+                start = index
+
+        xs = [item["x"] for item in layer_items]
+        ys = [item["y"] for item in layer_items]
+        span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+        radius = span * 0.02
+        for item in layer_items:
+            if not item["isInt"]:
+                kept.append(item)
+                continue
+            if item["value"] in run_drop:
+                continue
+            neighbours = 0
+            for other in layer_items:
+                if other is item:
+                    continue
+                if abs(other["x"] - item["x"]) <= radius and abs(other["y"] - item["y"]) <= radius:
+                    neighbours += 1
+                    if neighbours >= 4:
+                        break
+            if neighbours < 4:
+                kept.append(item)
+    return kept
+
+
+def _is_close_value(value: float, target: float) -> bool:
+    """两个长度是否算同一个值（合计标注与逐段之和会差在四舍五入上）。"""
+    return abs(value - target) <= max(0.6, abs(target) * 0.005)
+
+
+def _sheet_order(sheet: str) -> tuple[int, str]:
+    """分张明细按图签张号升序排，跟翻阅图纸的顺序一致（第2张在第13张前面）。"""
+    match = re.search(r"\d+", sheet or "")
+    return (int(match.group()) if match else 10 ** 6, sheet or "")
+
+
+def _label_group(item: dict[str, Any]) -> tuple[float, float, str]:
+    """同一条标注重（同一位置同一段文字）归为一组：一行里的几段长度要么都算，要么都不算。"""
+    return (round(item["x"], 1), round(item["y"], 1), item["text"])
+
+
+def _sheet_key(frame: dict[str, Any] | None) -> str:
+    """按「张」归组的键：一张图可能分幅画成多个图框，它们的标注要合起来看。
+
+    图签上的张号就是纸面上的"第几张"，分幅的多个图框共用同一个张号；
+    取不到张号时退回图框编号，至少不会把不同图框的量混在一起。
+    """
+    if frame and frame.get("sheet"):
+        return f"第{frame['sheet']}张"
+    if frame:
+        return f"图框{frame['no']}"
+    return "未归属图框"
+
+
+def _table_cable_items(tables: list[dict[str, Any]], frames: list[dict[str, Any]]
+                       ) -> dict[str, list[dict[str, Any]]]:
+    """各张图材料表里「通信光缆」那几行，键与 _sheet_key 一致。
+
+    按行返回而不是只返回合计：核对时要能说出"这张图的 6356.9 米 = 24芯 3104.4 +
+    12芯 2612.4 + 8芯 640.1"，才能拿图纸材料表逐行对。
+    竣工图常在材料表旁再标一次光缆总长，数值与该表数量一致，那段标注也要靠它识别。
+    """
+    by_no = {frame["no"]: frame for frame in frames}
+    items: dict[str, list[dict[str, Any]]] = {}
+    for table in tables:
+        columns = table["columns"]
+        name_col = _match_column(columns, _MATERIAL_NAME_KEYS)
+        qty_col = _match_column(columns, _MATERIAL_QTY_KEYS)
+        unit_col = _match_column(columns, _MATERIAL_UNIT_KEYS)
+        spec_col = _match_column(columns, _MATERIAL_SPEC_KEYS)
+        if name_col is None or qty_col is None:
+            continue
+        key = _sheet_key(by_no.get(table.get("frame")))
+        for row in table["rows"]:
+            if max(name_col, qty_col) >= len(row):
+                continue
+            if not any(hint in row[name_col] for hint in ("光缆", "电缆")):
+                continue
+            if unit_col is not None and unit_col < len(row) \
+                    and row[unit_col].strip().lower() not in ("米", "m"):
+                continue
+            qty = _to_number(row[qty_col])
+            if not qty:
+                continue
+            spec = row[spec_col].strip() if spec_col is not None and spec_col < len(row) else ""
+            label = f"{row[name_col].strip()} {spec}".strip()
+            items.setdefault(key, []).append({"label": label, "meters": round(qty, 3)})
+    return items
+
+
+def summarize_annotations(segments: list[dict[str, Any]], totals: list[dict[str, Any]],
+                          key_of, table_items: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """按张汇总图上标注的长度，返回采用值、分张明细与摘掉的重复标注。
+
+    取数优先级按可信度排，一张图（分幅合起来看）选一个：
+      1) 材料表里印的线缆数量——画图的人自己汇总过的工程量；
+      2) 整行只有「合计 XXX」的汇总行——同样是汇总值，但注意图上常同时印"每段光缆
+         的合计"和"按芯数汇总的合计"，两层加起来会翻倍，所以这层只做兜底；
+      3) 逐段标注之和——最后的手段，图上把同一段路由写两遍的情况挡不掉。
+    材料表旁那张"光缆总长"标注与材料表数量相同，直接摘出来，不参与分段和。
+
+    每张还带上组成明细（items）：用材料表时就是表里那几行光缆，用户可以逐行对图纸。
+    """
+    table_totals = {sheet: round(sum(row["meters"] for row in rows), 3)
+                    for sheet, rows in table_items.items()}
+    dropped: list[dict[str, Any]] = []
+    # 按"一条标注"整组处理：图纸把整段路由又写成一行（「埋1+管453.7」= 454.7），
+    # 这行的每一段都不该再加，否则那段路由就被算了两次
+    by_sheet_groups: dict[str, dict[tuple, list[dict[str, Any]]]] = {}
+    for item in segments:
+        sheet = key_of(item)
+        by_sheet_groups.setdefault(sheet, {}).setdefault(_label_group(item), []).append(item)
+
+    counted: list[dict[str, Any]] = []
+    segment_sum: dict[str, float] = {}
+    segment_count: dict[str, int] = {}
+    for sheet, groups in by_sheet_groups.items():
+        table_sum = table_totals.get(sheet) or 0.0
+        rest_groups: dict[tuple, list[dict[str, Any]]] = {}
+        for key, items in groups.items():
+            group_sum = sum(item["value"] for item in items)
+            if table_sum and _is_close_value(group_sum, table_sum):
+                dropped.extend(items)  # 这一行就是该张图的光缆总长，和材料表是同一批长度
+            else:
+                rest_groups[key] = items
+        # 没有材料表时，用"这一行 ≈ 其余各行之和"判断整段路由的汇总行
+        if not table_sum and len(rest_groups) >= 3:
+            sums = {key: sum(item["value"] for item in items) for key, items in rest_groups.items()}
+            group_total = sum(sums.values())
+            for key, group_sum in sums.items():
+                if _is_close_value(group_sum, group_total - group_sum):
+                    dropped.extend(rest_groups.pop(key))
+                    break
+        for items in rest_groups.values():
+            counted.extend(items)
+            segment_sum[sheet] = segment_sum.get(sheet, 0.0) + sum(item["value"] for item in items)
+            segment_count[sheet] = segment_count.get(sheet, 0) + len(items)
+
+    totals_by_sheet: dict[str, list[float]] = {}
+    for item in totals:
+        if not item.get("pure"):
+            continue
+        totals_by_sheet.setdefault(key_of(item), []).append(item["value"])
+
+    sheet_rows = []
+    for sheet in set(segment_sum) | set(totals_by_sheet) | set(table_items):
+        total_sum = round(sum(totals_by_sheet.get(sheet, [])), 3)
+        table_sum = table_totals.get(sheet, 0.0)
+        if table_sum:
+            meters, source = table_sum, "table"
+            items = table_items.get(sheet, [])
+        elif total_sum:
+            meters, source = total_sum, "summary"
+            items = [{"label": f"图上合计（{len(totals_by_sheet.get(sheet, []))} 处）",
+                      "meters": total_sum}]
+        else:
+            meters, source = segment_sum.get(sheet, 0.0), "segments"
+            items = []
+        sheet_rows.append({
+            "sheet": sheet,
+            "meters": round(meters, 3),
+            "segmentMeters": round(segment_sum.get(sheet, 0.0), 3),
+            "totalMeters": total_sum,
+            "tableMeters": table_sum,
+            "source": source,
+            "count": segment_count.get(sheet, 0) + len(totals_by_sheet.get(sheet, [])),
+            "items": items,
+        })
+    sheet_rows.sort(key=lambda row: _sheet_order(row["sheet"]))
+    sources = {row["source"] for row in sheet_rows}
+    return {
+        "meters": round(sum(row["meters"] for row in sheet_rows), 3),
+        # 全部按分段取量才能按敷设方式拆开；用了合计/材料表时口径对不上，就不拆
+        "basis": sources.pop() if len(sources) == 1 else ("mixed" if sources else "none"),
+        "sheets": sheet_rows,
+        "segments": counted,
+        "dropped": dropped,
+    }
+
 # 表格几何块：CAD 把 ACAD_TABLE 的单元格与边框放在匿名块里（展开后是普通 INSERT）
 _TABLE_BLOCK_RE = re.compile(r"^\*T\d+$")
 # 表头识别用：出现 2 个以上即认为是表头行
@@ -624,8 +926,14 @@ def _tables_from_blocks(doc) -> list[dict[str, Any]]:
     """
     refs: dict[str, list] = {}
     for entity in doc.modelspace():
-        if entity.dxftype() == "INSERT" and _TABLE_BLOCK_RE.match(entity.dxf.name):
+        etype = entity.dxftype()
+        if etype == "INSERT" and _TABLE_BLOCK_RE.match(entity.dxf.name):
             refs.setdefault(entity.dxf.name, []).append(entity.dxf.insert)
+        elif etype == "ACAD_TABLE":
+            # 没走过后处理（未展开 ACAD_TABLE）的图纸也要能定位：几何块名在组码 340
+            block_name = entity.dxf.get("geometry")
+            if block_name:
+                refs.setdefault(block_name, []).append(entity.dxf.insert)
 
     tables: list[dict[str, Any]] = []
     for block in doc.blocks:
@@ -635,8 +943,17 @@ def _tables_from_blocks(doc) -> list[dict[str, Any]]:
         if not table:
             continue
         points = refs.get(block.name) or []
-        table["pos"] = (points[0].x, points[0].y) if points else None
-        tables.append(table)
+        if not points:
+            table["pos"] = None
+            tables.append(table)
+            continue
+        # 同一个表格块可能被多处引用（分幅复制、整表复制），每个引用位置各出一张表：
+        # 只取第一个位置的话，后面的表会全被算到同一张图上，图幅归属和编号都错
+        for point in points:
+            item = dict(table)
+            item["rows"] = [list(row) for row in table["rows"]]  # 各表行数据互不共享
+            item["pos"] = (point.x, point.y)
+            tables.append(item)
     return tables
 
 
@@ -656,7 +973,8 @@ TABLE_EXTRACTORS: tuple[tuple[str, str, Any], ...] = (
 )
 
 
-def extract_material_tables(doc, diagnostics: dict[str, int] | None = None
+def extract_material_tables(doc, diagnostics: dict[str, int] | None = None,
+                            frames: list[dict[str, Any]] | None = None
                             ) -> list[dict[str, Any]]:
     """还原图纸里的表格（材料设备清单），同一图幅内重复的表格只保留一份。
 
@@ -668,8 +986,10 @@ def extract_material_tables(doc, diagnostics: dict[str, int] | None = None
     Args:
         diagnostics: 传入空字典时回填每个抽取器命中多少张表，供前端/日志判断
             这张图是用哪种画法解析出来的。
+        frames: 已算好的图框，传进来省一次遍历（标注核算也要用同一份图框）。
     """
-    frames = _drawing_frames(doc)
+    if frames is None:
+        frames = _drawing_frames(doc)
 
     built: list[tuple[tuple, int | None, dict[str, Any]]] = []
     for key, _label, extractor in TABLE_EXTRACTORS:
@@ -748,8 +1068,28 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
     layer_counts: dict[str, int] = {}
     entities_sample: list[dict[str, Any]] = []
     annotations: list[str] = []
+    length_labels: list[dict[str, Any]] = []
+    length_totals: list[dict[str, Any]] = []
     total_entities = 0
     total_length = 0.0
+
+    def collect_text(raw: str, layer: str, x: float = 0.0, y: float = 0.0) -> None:
+        """收集标注文本：既进 annotations 明细，也尝试当段长解析（MTEXT 会先按 \P 拆行）"""
+        for part in (raw or "").replace("\\P", "\n").replace("\\p", "\n").split("\n"):
+            clean = clean_annotation(part)
+            if not clean:
+                continue
+            if len(annotations) < sample_limit:
+                annotations.append(clean)
+            segments, totals = parse_length_labels(clean)
+            for value, kind, is_int in segments:
+                if len(length_labels) < 5000:
+                    length_labels.append({"text": clean, "value": round(value, 3), "kind": kind,
+                                          "isInt": is_int, "x": x, "y": y, "layer": layer})
+            for value, pure in totals:
+                if len(length_totals) < 500:
+                    length_totals.append({"text": clean, "value": round(value, 3), "pure": pure,
+                                          "x": x, "y": y, "layer": layer})
 
     for entity in msp:
         total_entities += 1
@@ -785,10 +1125,21 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
             if len(entities_sample) < sample_limit:
                 entities_sample.append({"id": entity.dxf.handle, "type": etype, "layer": layer,
                                         "block": name})
+            # 图块属性里也常写段长（例如带属性的标注块），一并收进来
+            for attrib in getattr(entity, "attribs", []):
+                try:
+                    point = attrib.dxf.insert
+                    collect_text(attrib.dxf.text, layer, float(point.x), float(point.y))
+                except Exception:  # noqa: BLE001
+                    collect_text(getattr(attrib.dxf, "text", ""), layer)
         elif etype in ("TEXT", "MTEXT"):
             text = entity.dxf.text if etype == "TEXT" else entity.text
-            if text and len(annotations) < sample_limit:
-                annotations.append(text.strip())
+            try:
+                point = entity.dxf.insert
+                position = (float(point.x), float(point.y))
+            except Exception:  # noqa: BLE001
+                position = (0.0, 0.0)
+            collect_text(text, layer, position[0], position[1])
         elif len(entities_sample) < sample_limit:
             entities_sample.append({"id": entity.dxf.handle, "type": etype, "layer": layer})
 
@@ -798,18 +1149,72 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
     device_total = sum(device_blocks.values())
     meters = _to_meters(total_length, units)
     cable_meters = _to_meters(sum(cable_layers.values()), units)
+    # 剔掉表格里成堆的序号/图号，只留下像段长的标注
+    length_labels = _filter_table_numbers(length_labels)
 
+    # 表格要先抽出来：图上的「光缆总长」标注要靠材料表数量识别，否则会跟逐段长度重复累加
     project_info = extract_project_info(doc)
+    frames = _drawing_frames(doc)
     table_hits: dict[str, int] = {}
-    materials = extract_material_tables(doc, table_hits)
+    materials = extract_material_tables(doc, table_hits, frames)
+
+    # 标注段长合计：图纸没画线缆图层时的长度来源（标注一般直接写米）。
+    # 按「张」归组后再合计：合计行、分段、材料表里的光缆数量要能对上同一张图。
+    def sheet_key_of(item: dict[str, Any]) -> str:
+        frame_no = _frame_no_of((item["x"], item["y"]), frames)
+        return _sheet_key(next((f for f in frames if f["no"] == frame_no), None))
+
+    cable_rows_by_sheet = _table_cable_items(materials, frames)
+    annotation = summarize_annotations(length_labels, length_totals, sheet_key_of,
+                                       cable_rows_by_sheet)
+    segments = annotation["segments"]
+    label_meters = annotation["meters"]
+    # 材料表里印的光缆数量：图纸自己给的工程量，标注缺失时比按段长反推更可信
+    material_cable_meters = round(sum(row["meters"] for rows in cable_rows_by_sheet.values()
+                                      for row in rows), 3)
+
+    kind_totals: dict[str, float] = {}
+    bare_total = 0.0
+    for item in segments:
+        key = item["kind"] or "bare"
+        kind_totals[key] = kind_totals.get(key, 0.0) + item["value"]
+        if not item["kind"]:
+            bare_total += item["value"]
+    # 按敷设方式拆开只在"全部按分段取量"时成立：用了合计/材料表时拆出来的和跟总数对不上，
+    # 前端按类别比对会误判，宁可不给分类明细
+    annotation_by_kind = ({k: round(v, 3) for k, v in kind_totals.items()}
+                          if annotation["basis"] == "segments" else {})
+
+    # 按图层核算：用户要能按图层核对「这个层一共标了多少米」
+    layer_totals: dict[str, dict[str, Any]] = {}
+    for item in segments:
+        bucket = layer_totals.setdefault(item["layer"], {"count": 0, "meters": 0.0})
+        bucket["count"] += 1
+        bucket["meters"] += item["value"]
+    annotation_by_layer = {
+        layer: {"count": bucket["count"], "meters": round(bucket["meters"], 3)}
+        for layer, bucket in layer_totals.items()
+    }
+
     material_summary = summarize_materials(materials)
     material_items = sum(len(table["rows"]) for table in materials)
     # 记录每种画法各抽出多少张表，出问题时能一眼看出是"没这张表"还是"这种画法没覆盖"
     table_sources = [{"key": key, "label": label, "count": table_hits.get(key, 0)}
                      for key, label, _ in TABLE_EXTRACTORS]
 
+    # 采用值和材料表数量一致时不重复写两遍，免得看着像两个口径
+    if material_cable_meters and _is_close_value(label_meters, material_cable_meters):
+        cable_note = f"，标注/材料表光缆 {material_cable_meters} m"
+    elif material_cable_meters:
+        cable_note = f"，标注段长 {label_meters} m、材料表光缆 {material_cable_meters} m"
+    elif label_meters:
+        cable_note = f"，标注段长 {label_meters} m"
+    else:
+        cable_note = ""
+
     summary = (f"图元 {total_entities} 个，图层 {len(layer_counts)} 个；"
-               f"线路总长 {round(meters, 2)} m（线缆图层 {round(cable_meters, 2)} m）；"
+               f"线路总长 {round(meters, 2)} m（线缆图层 {round(cable_meters, 2)} m"
+               + cable_note + "）；"
                f"设备块 {device_total} 个；材料表 {len(materials)} 张 / {material_items} 条"
                f"（归纳 {len(material_summary)} 种）")
 
@@ -821,6 +1226,29 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
             "totalEntities": total_entities,
             "totalLengthMeters": round(meters, 3),
             "cableLengthMeters": round(cable_meters, 3),
+            # 材料表里印的线缆数量合计：图纸自己算好的工程量，比按标注反推更可信
+            "materialCableMeters": material_cable_meters,
+            # 图上标注的长度（5.7、桥20、合计399.5 这类）：没画光缆图层时靠它反推线缆长度
+            "annotationLengthMeters": label_meters,
+            "annotationByKind": annotation_by_kind,
+            "annotationByLayer": annotation_by_layer,
+            "annotationBareMeters": round(bare_total, 3),
+            "annotationCount": len(segments),
+            # 图上印的「合计」行：按张列出，跟分段和、材料表光缆数量一起核对
+            "annotationTotalMeters": round(sum(row["totalMeters"] for row in annotation["sheets"]), 3),
+            "annotationTotalCount": len(length_totals),
+            "annotationTotals": [{"text": item["text"], "value": item["value"],
+                                  "layer": item["layer"]}
+                                 for item in length_totals[:40]],
+            "annotationBasis": annotation["basis"],
+            "annotationBySheet": annotation["sheets"],
+            # 与材料表光缆数量重复的标注（图上的光缆总长）：摘出来只作核对，不参与合计
+            "annotationDropped": [{"text": item["text"], "value": item["value"],
+                                   "layer": item["layer"]}
+                                  for item in annotation["dropped"][:40]],
+            "lengthAnnotations": [{"text": item["text"], "value": item["value"],
+                                   "kind": item["kind"], "layer": item["layer"]}
+                                  for item in segments[:80]],
             "deviceCount": device_total,
             "materialTableCount": len(materials),
             "materialItemCount": material_items,
