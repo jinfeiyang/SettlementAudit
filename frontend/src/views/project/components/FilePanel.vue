@@ -11,24 +11,50 @@
       </span>
     </div>
 
-    <el-table v-loading="loading" :data="files" empty-text="暂无资料，请上传清单或图纸">
-      <el-table-column prop="fileName" label="文件名" min-width="220" show-overflow-tooltip />
+    <h4 class="section">清单文件（Excel）</h4>
+    <el-table v-loading="loading" :data="boqFiles" empty-text="暂无清单文件，请输入工程量清单 Excel">
+      <el-table-column prop="fileName" label="文件名" min-width="240" show-overflow-tooltip />
       <el-table-column label="类型" width="110">
         <template #default="{ row }">{{ typeLabel(row.fileType) }}</template>
       </el-table-column>
-      <el-table-column label="大小" width="100">
+      <el-table-column label="大小" width="90">
         <template #default="{ row }">{{ fileSize(row.fileSize) }}</template>
       </el-table-column>
-      <el-table-column label="解析状态" width="120">
+      <el-table-column label="解析状态" width="110">
         <template #default="{ row }">
           <el-tag :type="statusTag(row.parseStatus)" size="small">{{ row.parseStatusName }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="可解析率" width="110" align="right">
+      <el-table-column label="可解析率" width="100" align="right">
         <template #default="{ row }">{{ row.parseRate === undefined || row.parseRate === null ? '-' : percent(row.parseRate) }}</template>
       </el-table-column>
-      <el-table-column prop="parseMessage" label="解析提示" min-width="260" show-overflow-tooltip />
-      <el-table-column label="操作" width="340" fixed="right">
+      <el-table-column prop="parseMessage" label="导入摘要" min-width="280" show-overflow-tooltip />
+      <el-table-column label="操作" width="280" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="showBoqResult(row)">导入结果</el-button>
+          <el-button link type="primary" @click="parse(row)">重新解析</el-button>
+          <el-button link type="primary" @click="projectApi.downloadFile(row.id, row.fileName)">下载</el-button>
+          <el-button link type="danger" @click="remove(row)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+
+    <h4 class="section">图纸文件（DXF / DWG）</h4>
+    <el-table v-loading="loading" :data="drawingFiles" empty-text="暂无图纸文件，请上传竣工图 DXF/DWG">
+      <el-table-column prop="fileName" label="文件名" min-width="240" show-overflow-tooltip />
+      <el-table-column label="类型" width="110">
+        <template #default="{ row }">{{ typeLabel(row.fileType) }}</template>
+      </el-table-column>
+      <el-table-column label="大小" width="90">
+        <template #default="{ row }">{{ fileSize(row.fileSize) }}</template>
+      </el-table-column>
+      <el-table-column label="解析状态" width="110">
+        <template #default="{ row }">
+          <el-tag :type="statusTag(row.parseStatus)" size="small">{{ row.parseStatusName }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="parseMessage" label="解析提示" min-width="280" show-overflow-tooltip />
+      <el-table-column label="操作" width="330" fixed="right">
         <template #default="{ row }">
           <el-button v-if="isDrawingFile(row)" link type="primary" @click="openDrawing(row)">查看图纸</el-button>
           <el-button v-if="isDrawing(row)" link type="primary" @click="showResult(row)">量算结果</el-button>
@@ -39,89 +65,247 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="resultVisible" title="图纸解析与量算结果（A1）" width="70%">
-      <el-descriptions :column="2" border size="small">
-        <el-descriptions-item label="解析摘要" :span="2">
-          {{ result.summary || '-' }}
-        </el-descriptions-item>
-        <el-descriptions-item label="图元数量">{{ measure.totalEntities ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="图纸单位">{{ result.unit || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="线路总长（米）">{{ measure.totalLengthMeters ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="线缆图层长度（米）">{{ measure.cableLengthMeters ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="设备数量（个）">{{ measure.deviceCount ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="材料表 / 条目">
-          {{ measure.materialTableCount ?? 0 }} 张 / {{ measure.materialItemCount ?? 0 }} 条
-        </el-descriptions-item>
-        <el-descriptions-item label="表格识别方式">{{ tableSourceLabel() }}</el-descriptions-item>
-        <el-descriptions-item label="说明" :span="2">{{ result.hint || '-' }}</el-descriptions-item>
+    <el-dialog v-model="boqResultVisible" title="清单导入结果" width="580px">
+      <el-descriptions :column="1" border size="small">
+        <el-descriptions-item label="文件">{{ boqFile?.fileName || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="解析状态">{{ boqFile?.parseStatusName || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="可解析率">{{ percent(boqFile?.parseRate) }}</el-descriptions-item>
+        <el-descriptions-item label="导入摘要">{{ boqFile?.parseMessage || '-' }}</el-descriptions-item>
       </el-descriptions>
-
-      <template v-if="projectInfo.length">
-        <h4>项目情况</h4>
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item
-            v-for="item in projectInfo"
-            :key="item.label"
-            :label="item.label"
-            :span="item.value.length > 24 ? 2 : 1"
-          >{{ item.value }}</el-descriptions-item>
-        </el-descriptions>
+      <h4 class="section">当前清单类别统计</h4>
+      <el-table :data="boqTypeStats" size="small" border empty-text="清单为空，请重新解析">
+        <el-table-column prop="label" label="类别" />
+        <el-table-column prop="count" label="条数" width="100" align="right" />
+      </el-table>
+      <template #footer>
+        <el-button @click="boqResultVisible = false">关闭</el-button>
+        <el-button type="primary" @click="gotoBoq">去「清单」查看明细</el-button>
       </template>
+    </el-dialog>
 
-      <h4>材料设备清单归纳统计</h4>
-      <el-table
-        v-if="materialSummary.length"
-        :data="materialSummary"
-        size="small"
-        border
-        stripe
-        max-height="320"
-        class="summary-table"
-        :header-cell-style="{ background: '#fafafa', color: '#606266', fontWeight: 600 }"
-      >
-        <el-table-column type="index" label="序号" width="60" align="center" />
-        <el-table-column prop="name" label="名称" min-width="170" show-overflow-tooltip />
-        <el-table-column prop="spec" label="规格程式" min-width="260" show-overflow-tooltip />
-        <el-table-column prop="unit" label="单位" width="70" align="center" />
-        <el-table-column prop="quantity" label="合计数量" width="130" align="right" class-name="num-cell">
-          <template #default="{ row }">{{ formatQuantity(row.quantity) }}</template>
-        </el-table-column>
-        <el-table-column prop="tableCount" label="来源表数" width="100" align="right" class-name="num-cell" />
-      </el-table>
-      <el-empty v-else description="未识别到可统计的材料数量" :image-size="60" />
+    <el-dialog v-model="resultVisible" title="图纸解析与量算结果" width="72%" top="6vh">
+      <div class="result-dialog">
+        <el-tabs v-model="resultTab" class="result-tabs">
+        <el-tab-pane label="量算概览" name="overview">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="解析摘要" :span="2">
+              {{ result.summary || '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="图元数量">{{ measure.totalEntities ?? '-' }}</el-descriptions-item>
+            <el-descriptions-item label="图纸单位">{{ result.unit || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="线路总长（米）">{{ measure.totalLengthMeters ?? '-' }}</el-descriptions-item>
+            <el-descriptions-item label="线缆图层长度（米）">{{ measure.cableLengthMeters ?? '-' }}</el-descriptions-item>
+            <el-descriptions-item v-if="measure.deviceCount" label="设备数量（个）">
+              {{ measure.deviceCount }}
+            </el-descriptions-item>
+            <el-descriptions-item label="材料表 / 条目">
+              {{ measure.materialTableCount ?? 0 }} 张 / {{ measure.materialItemCount ?? 0 }} 条
+            </el-descriptions-item>
+            <el-descriptions-item label="表格识别方式">{{ tableSourceLabel() }}</el-descriptions-item>
+            <el-descriptions-item label="说明">{{ result.hint || '-' }}</el-descriptions-item>
+          </el-descriptions>
 
-      <h4>材料设备清单明细</h4>
-      <div v-if="materialTables.length" class="material-scroll">
-        <div v-for="table in materialTables" :key="table.table" class="material-table">
-          <div class="material-title">
-            表 {{ table.frameIndex ?? table.table }}
-            <span v-if="table.frame" class="material-block">{{ frameLabel(table) }}</span>
-          </div>
-          <el-table :data="table.rows" size="small" border>
-            <el-table-column
-              v-for="(column, index) in table.columns"
-              :key="index"
-              :label="column"
-              min-width="90"
-            >
-              <template #default="{ row }">{{ row[index] }}</template>
+          <template v-if="projectInfo.length">
+            <h4 class="section-title">项目情况</h4>
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item
+                v-for="item in projectInfo"
+                :key="item.label"
+                :label="item.label"
+                :span="item.value.length > 24 ? 2 : 1"
+              >{{ item.value }}</el-descriptions-item>
+            </el-descriptions>
+          </template>
+
+          <template v-if="blockRows.length">
+            <h4 class="section-title">设备块统计</h4>
+            <el-table :data="blockRows" size="small" border>
+              <el-table-column prop="block" label="块名称" />
+              <el-table-column prop="count" label="数量" width="120" />
+            </el-table>
+          </template>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`材料归纳统计 (${materialSummary.length})`" name="summary">
+          <el-table
+            v-if="materialSummary.length"
+            :data="materialSummary"
+            size="small"
+            border
+            stripe
+            max-height="56vh"
+            class="summary-table"
+            :header-cell-style="{ background: '#fafafa', color: '#606266', fontWeight: 600 }"
+          >
+            <el-table-column type="index" label="序号" width="60" />
+            <el-table-column prop="name" label="名称" min-width="170" show-overflow-tooltip />
+            <el-table-column prop="spec" label="规格程式" min-width="260" show-overflow-tooltip />
+            <el-table-column prop="unit" label="单位" width="70" />
+            <el-table-column prop="quantity" label="合计数量" width="130" class-name="num-cell">
+              <template #default="{ row }">{{ formatQuantity(row.quantity) }}</template>
             </el-table-column>
+            <el-table-column prop="tableCount" label="来源表数" width="100" class-name="num-cell" />
           </el-table>
-        </div>
+          <el-empty v-else description="未识别到可统计的材料数量" :image-size="60" />
+        </el-tab-pane>
+
+        <el-tab-pane :label="`材料清单明细 (${materialTables.length})`" name="detail">
+          <div v-if="materialTables.length" class="material-scroll">
+            <div v-for="table in materialTables" :key="table.table" class="material-table">
+              <div class="material-title">
+                表 {{ table.frameIndex ?? table.table }}
+                <span v-if="table.frame" class="material-block">{{ frameLabel(table) }}</span>
+              </div>
+              <el-table :data="table.rows" size="small" border>
+                <el-table-column
+                  v-for="(column, index) in table.columns"
+                  :key="index"
+                  :label="column"
+                  min-width="90"
+                >
+                  <template #default="{ row }">{{ row[index] }}</template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+          <el-empty
+            v-else
+            description="未识别到材料设备清单表格，可确认该图纸是否含工程量/材料明细表"
+            :image-size="60"
+          />
+        </el-tab-pane>
+
+        <el-tab-pane label="光缆长度核查" name="cable">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="图纸计算长度">
+              {{ formatQuantity(cableCheck.computed) }} 米
+            </el-descriptions-item>
+            <el-descriptions-item label="清单申报长度">
+              {{ cableCheck.reported === null ? '-' : `${formatQuantity(cableCheck.reported)} 米` }}
+            </el-descriptions-item>
+            <el-descriptions-item label="差异">
+              <span v-if="cableCheck.diff === null || cableCheck.status === 'NO_BASIS'" class="muted">
+                口径不同，不计差异
+              </span>
+              <span v-else :class="cableCheck.diff < -0.01 ? 'diff-less' : 'diff-ok'">
+                {{ cableCheck.diff > 0 ? '+' : '' }}{{ formatQuantity(cableCheck.diff) }} 米
+                <template v-if="cableCheck.diffRate !== null">（{{ formatQuantity(cableCheck.diffRate) }}%）</template>
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item label="核查结论">
+              <el-tag :type="cableTagType" size="small">
+                {{ cableOverall === 'LESS' ? '清单小于图纸，疑似少计' : cableStatusText(cableCheck) }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="数据来源">
+              {{ cableSourceText(drawingCable.source) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="长度来源">
+              <span v-if="measure.annotationLengthMeters">
+                {{ annotationBasisText(measure.annotationBasis) }}，
+                合计 {{ formatQuantity(measure.annotationLengthMeters) }} 米
+                （共 {{ measure.annotationCount ?? lengthAnnotations.length }} 条标注参与核对）
+              </span>
+              <span v-else class="muted">未识别到长度标注</span>
+            </el-descriptions-item>
+          </el-descriptions>
+          <el-alert
+            v-if="cableOverall === 'LESS'"
+            class="cable-alert"
+            type="error"
+            :closable="false"
+            show-icon
+            :title="`清单申报长度小于图纸计算长度 ${formatQuantity(cableShortfall)} 米，工程量疑似少计，请核对清单与图纸`"
+          />
+          <el-alert
+            v-else-if="cableOverall === 'NO_BOQ'"
+            class="cable-alert"
+            type="warning"
+            :closable="false"
+            show-icon
+            title="清单中没有找到光缆类工程量行（长度单位），无法比对"
+          />
+          <el-alert
+            v-else-if="cableOverall === 'NO_BASIS'"
+            class="cable-alert"
+            type="info"
+            :closable="false"
+            show-icon
+            title="清单里的光缆按芯数分行（4芯/8芯/12芯/24芯）是甲供领用量，与图纸路由长度不是同一个量，不做少计判定"
+          />
+
+          <template v-if="annotationSheetRows.length">
+            <h4 class="section-title">
+              按张核对（图纸计算长度）
+              <span class="muted">
+                共 {{ annotationSheetRows.length }} 张，合计
+                {{ formatQuantity(measure.annotationLengthMeters) }} 米；同一张分幅画的几个图框合起来算，
+                「组成」就是材料表里那几行光缆，可以拿图纸逐行对
+              </span>
+            </h4>
+            <el-table :data="annotationSheetRows" size="small" border class="cable-table">
+              <el-table-column prop="sheet" label="图签张号" width="100" />
+              <el-table-column prop="sourceLabel" label="长度来源" width="100" />
+              <el-table-column label="光缆长度（米）" width="130">
+                <template #default="{ row }">{{ formatQuantity(row.meters) }}</template>
+              </el-table-column>
+              <el-table-column prop="composition" label="组成（规格 米数）" min-width="240" class-name="wrap-cell">
+                <template #default="{ row }">
+                  {{ row.composition || '无材料表，按逐段标注取量' }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="count" label="标注条数" width="100" />
+            </el-table>
+          </template>
+
+          <template v-if="cableLines.length">
+            <h4 class="section-title">按敷设方式比对</h4>
+            <el-table :data="cableLines" size="small" border class="cable-table">
+              <el-table-column prop="label" label="敷设方式" width="130" />
+              <el-table-column label="图纸计算（米）" width="140">
+                <template #default="{ row }">{{ formatQuantity(row.computed) }}</template>
+              </el-table-column>
+              <el-table-column label="清单申报（米）" width="140">
+                <template #default="{ row }">
+                  {{ row.reported === null ? '-' : formatQuantity(row.reported) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="结论" min-width="180">
+                <template #default="{ row }">
+                  <el-tag
+                    :type="row.status === 'LESS' ? 'danger' : row.status === 'OK' ? 'success' : 'warning'"
+                    size="small"
+                    effect="plain"
+                  >
+                    {{ row.status === 'LESS' ? '清单小于图纸' : row.status === 'OK' ? '通过' : row.status === 'NO_BOQ' ? '清单无此类' : '图纸无此图层' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+
+          <template v-if="cableCheck.rows.length">
+            <h4 class="section-title">参与比对的清单行</h4>
+            <el-table :data="cableCheck.rows" size="small" border class="cable-table" empty-text="无">
+              <el-table-column prop="itemName" label="名称" min-width="200" class-name="wrap-cell" />
+              <el-table-column prop="spec" label="规格" min-width="220" class-name="wrap-cell">
+                <template #default="{ row }">{{ row.spec || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="quantity" label="数量" width="110">
+                <template #default="{ row }">{{ formatQuantity(row.quantity) }}</template>
+              </el-table-column>
+              <el-table-column prop="unit" label="单位" width="70" />
+              <el-table-column label="折算长度（米）" width="130">
+                <template #default="{ row }">{{ formatQuantity(row.meters) }}</template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </el-tab-pane>
+        </el-tabs>
       </div>
-      <el-empty v-else description="未识别到材料设备清单表格，可确认该图纸是否含工程量/材料明细表" :image-size="60" />
-
-      <h4>线缆图层长度（米）</h4>
-      <el-table :data="layerRows" size="small" border empty-text="未识别到线缆图层">
-        <el-table-column prop="layer" label="图层" />
-        <el-table-column prop="length" label="长度（米）" width="160" align="right" />
-      </el-table>
-
-      <h4>设备块统计</h4>
-      <el-table :data="blockRows" size="small" border empty-text="未识别到设备块">
-        <el-table-column prop="block" label="块名称" />
-        <el-table-column prop="count" label="数量" width="120" align="right" />
-      </el-table>
+      <template #footer>
+        <el-button @click="resultVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog
@@ -137,14 +321,23 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
-import { boqApi, projectApi, type FileVO } from '@/api'
+import { boqApi, projectApi, type BoqItemVO, type FileVO } from '@/api'
 import { fileSize, percent, statusTag } from '@/utils/format'
+import {
+  annotationBasisText,
+  annotationSheets,
+  cableCategoryLines,
+  cableSourceText,
+  cableStatusText,
+  checkCableLength,
+  toDrawingCable,
+} from '@/utils/cableCheck'
 import DrawingViewer from './DrawingViewer.vue'
 
 const props = defineProps<{ projectId: number }>()
-const emit = defineEmits<{ (e: 'changed'): void }>()
+const emit = defineEmits<{ (e: 'changed'): void; (e: 'go', tab: string): void }>()
 
 const files = ref<FileVO[]>([])
 const loading = ref(false)
@@ -152,10 +345,14 @@ const uploading = ref(false)
 const resultVisible = ref(false)
 const drawingVisible = ref(false)
 const drawingFile = ref<FileVO | null>(null)
+const boqResultVisible = ref(false)
+const boqFile = ref<FileVO | null>(null)
+const boqTypeStats = ref<{ label: string; count: number }[]>([])
 const result = ref<Record<string, any>>({})
 const measure = ref<Record<string, any>>({})
+/** 量算结果弹窗的页签：量算概览 / 材料归纳统计 / 材料清单明细 / 光缆长度核查 */
+const resultTab = ref('overview')
 const projectInfo = ref<{ label: string; value: string }[]>([])
-const layerRows = ref<{ layer: string; length: number }[]>([])
 const blockRows = ref<{ block: string; count: number }[]>([])
 const materialTables = ref<{
   table: number
@@ -167,7 +364,51 @@ const materialTables = ref<{
   rows: string[][]
 }[]>([])
 const materialSummary = ref<{ name: string; spec: string; unit: string; quantity: number; tableCount: number }[]>([])
+/** 清单行：光缆长度核查要拿图纸算出来的量跟清单申报量比 */
+const boqItems = ref<BoqItemVO[]>([])
 let timer: number | undefined
+
+/** 图上的段长标注（5.7、管453.7 这类），图纸没画线缆图层时就是长度来源 */
+const lengthAnnotations = computed(
+  () => (measure.value.lengthAnnotations ?? []) as { text: string; value: number; layer: string }[],
+)
+/** 当前图纸算出来的光缆长度 */
+const drawingCable = computed(() => toDrawingCable(measure.value))
+/** 当前图纸的光缆长度 vs 清单申报长度 */
+const cableCheck = computed(() => checkCableLength(drawingCable.value, boqItems.value))
+/** 分类比对：管道、架空分开看，合计通过但某一类少计也要报出来 */
+const cableLines = computed(() => cableCategoryLines(drawingCable.value, boqItems.value))
+const cableOverall = computed(() =>
+  cableLines.value.some((line) => line.status === 'LESS') ? 'LESS' : cableCheck.value.status,
+)
+/** 少计的缺口：取分类里最大的那一类，没有分类就按合计差 */
+const cableShortfall = computed(() => {
+  const less = cableLines.value.filter((line) => line.status === 'LESS')
+  if (!less.length) {
+    return Math.abs(cableCheck.value.diff ?? 0)
+  }
+  return Math.max(...less.map((line) => Math.abs((line.reported ?? 0) - line.computed)))
+})
+
+const cableTagType = computed(() => {
+  switch (cableOverall.value) {
+    case 'LESS':
+      return 'danger'
+    case 'OK':
+      return 'success'
+    case 'NO_BASIS':
+      return 'info'
+    default:
+      return 'warning'
+  }
+})
+
+/** 按张核对：每张图的光缆长度来源、米数与组成 */
+const annotationSheetRows = computed(() => annotationSheets(measure.value))
+
+/** 清单与图纸分两张表展示，避免混在一起看不清解析目标 */
+const boqFiles = computed(() => files.value.filter((f) => f.fileType === 'BOQ_EXCEL'))
+const drawingFiles = computed(() => files.value.filter((f) => isDrawingFile(f)))
 
 function isDrawingFile(row: FileVO) {
   return row.fileType === 'DXF' || row.fileType === 'DWG'
@@ -183,17 +424,41 @@ function openDrawing(row: FileVO) {
   drawingVisible.value = true
 }
 
-/** 查看图纸解析与量算结果（A1：线路长度、设备数量） */
+/** 清单导入结果：文件侧解析情况 + 当前清单各类别条数，便于判断是否需要重新解析 */
+async function showBoqResult(row: FileVO) {
+  boqFile.value = row
+  boqTypeStats.value = []
+  boqResultVisible.value = true
+  const items = await boqApi.all(props.projectId)
+  const counter = new Map<string, number>()
+  items.forEach((item) => {
+    const label = item.itemTypeName || '工程量清单'
+    counter.set(label, (counter.get(label) ?? 0) + 1)
+  })
+  boqTypeStats.value = [...counter.entries()].map(([label, count]) => ({ label, count }))
+}
+
+/** 跳到「工程量清单」页看明细 */
+function gotoBoq() {
+  boqResultVisible.value = false
+  emit('go', 'boq')
+}
+
+/** 查看图纸解析与量算结果（A1：线路长度、设备数量），并做光缆长度核查 */
 async function showResult(row: FileVO) {
   result.value = await projectApi.parseResult(row.id)
   measure.value = result.value.measure ?? {}
-  const layers: Record<string, number> = measure.value.cableLayers ?? {}
-  layerRows.value = Object.keys(layers).map((layer) => ({ layer, length: layers[layer] }))
+  try {
+    boqItems.value = await boqApi.all(props.projectId)
+  } catch {
+    boqItems.value = []
+  }
   const blocks: Record<string, number> = measure.value.deviceBlocks ?? {}
   blockRows.value = Object.keys(blocks).map((block) => ({ block, count: blocks[block] }))
   projectInfo.value = result.value.projectInfo ?? []
   materialTables.value = result.value.materials ?? []
   materialSummary.value = result.value.materialSummary ?? []
+  resultTab.value = 'overview'
   resultVisible.value = true
 }
 
@@ -342,5 +607,47 @@ onBeforeUnmount(stopPoll)
 .material-block {
   margin-left: 6px;
   color: #a8abb2;
+}
+
+/* 光缆长度核查：差异为负（清单少计）标红，通过标绿 */
+.cable-alert {
+  margin: 8px 0 0;
+}
+.cable-table {
+  margin-top: 8px;
+}
+.diff-less {
+  color: #f56c6c;
+  font-weight: 600;
+}
+.diff-ok {
+  color: #67c23a;
+}
+.cable-table :deep(.wrap-cell .cell) {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.45;
+}
+
+/* 量算结果弹窗：按页签分区，各页的小标题统一留白 */
+.result-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+.section-title {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+.section-title:first-child {
+  margin-top: 0;
+}
+
+/* 表格数据统一居中（表头 + 单元格），量算结果里的数字都是一个量级的对照，居中最整齐 */
+.result-dialog :deep(.el-table .cell) {
+  text-align: center;
+}
+.result-dialog :deep(.el-descriptions__label) {
+  text-align: center;
 }
 </style>

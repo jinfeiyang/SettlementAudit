@@ -46,7 +46,10 @@
       </el-table-column>
       <el-table-column prop="projectName" label="项目" width="200" show-overflow-tooltip />
       <el-table-column prop="issueTypeName" label="类型" width="110" />
-      <el-table-column prop="title" label="疑点标题" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="title" label="疑点标题" min-width="220" class-name="wrap-cell" />
+      <el-table-column prop="detail" label="判定依据" min-width="360" class-name="wrap-cell">
+        <template #default="{ row }">{{ row.detail || '-' }}</template>
+      </el-table-column>
       <el-table-column label="清单行号" width="100" align="center">
         <template #default="{ row }">
           <el-button v-if="row.rowNo" link type="primary" @click="locate(row)">{{ row.rowNo }}</el-button>
@@ -188,5 +191,12 @@ onMounted(async () => {
 .pager {
   margin-top: 16px;
   justify-content: flex-end;
+}
+/* 疑点标题与判定依据要能看全，长文本换行而不是省略号 */
+:deep(.wrap-cell .cell) {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.5;
+  padding: 4px 8px;
 }
 </style>

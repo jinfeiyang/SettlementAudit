@@ -46,33 +46,49 @@
       </el-table-column>
     </el-table>
 
-    <el-drawer v-model="previewVisible" :title="current?.title || '报告预览'" size="52%">
-      <div v-if="sections.length" class="report">
-        <h2 class="report-title">{{ current?.title }}</h2>
-        <div class="report-meta">
-          <span>版本 V{{ current?.version }}</span>
-          <span>状态：{{ current?.statusName }}</span>
-          <span v-if="current?.aiModel">成文模型：{{ current.aiModel }}</span>
+    <el-dialog
+      v-model="previewVisible"
+      :title="current?.title || '报告预览'"
+      width="70%"
+      align-center
+      destroy-on-close
+    >
+      <div class="report-body">
+        <div v-if="sections.length" class="report">
+          <h2 class="report-title">{{ current?.title }}</h2>
+          <div class="report-meta">
+            <span>版本 V{{ current?.version }}</span>
+            <span>状态：{{ current?.statusName }}</span>
+            <span v-if="current?.aiModel">成文模型：{{ current.aiModel }}</span>
+          </div>
+          <section v-for="(section, index) in sections" :key="index">
+            <h3>{{ section.title }}</h3>
+            <template v-if="section.type === 'table'">
+              <el-table :data="toTableData(section)" size="small" border>
+                <el-table-column
+                  v-for="(col, colIndex) in section.columns || []"
+                  :key="colIndex"
+                  :prop="`c${colIndex}`"
+                  :label="col"
+                  min-width="110"
+                  show-overflow-tooltip
+                />
+              </el-table>
+            </template>
+            <template v-else>
+              <p
+                v-for="(line, lineIndex) in reportTextLines(section.text)"
+                :key="lineIndex"
+                :class="['text', { 'text-list': line.list }]"
+              >
+                {{ line.text }}
+              </p>
+            </template>
+          </section>
         </div>
-        <section v-for="(section, index) in sections" :key="index">
-          <h3>{{ section.title }}</h3>
-          <template v-if="section.type === 'table'">
-            <el-table :data="toTableData(section)" size="small" border>
-              <el-table-column
-                v-for="(col, colIndex) in section.columns || []"
-                :key="colIndex"
-                :prop="`c${colIndex}`"
-                :label="col"
-                min-width="110"
-                show-overflow-tooltip
-              />
-            </el-table>
-          </template>
-          <p v-else class="text">{{ section.text }}</p>
-        </section>
+        <el-empty v-else description="报告内容为空" />
       </div>
-      <el-empty v-else description="报告内容为空" />
-    </el-drawer>
+    </el-dialog>
 
     <el-dialog v-model="editVisible" title="编辑报告初稿" width="760px">
       <el-form label-width="90px">
@@ -92,13 +108,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { reportApi, type ReportContent, type ReportSection, type ReportVO } from '@/api'
 import { datetime, statusTag } from '@/utils/format'
+import { reportTextLines } from '@/utils/report'
 import { useAppStore } from '@/stores/app'
 
-const props = defineProps<{ projectId: number }>()
+/** refreshKey 由父组件在生成报告后自增，Tab 已挂载时也能刷新列表 */
+const props = defineProps<{ projectId: number; refreshKey?: number }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
 const store = useAppStore()
@@ -208,6 +226,7 @@ function exportWord(row: ReportVO) {
 }
 
 onMounted(load)
+watch(() => props.refreshKey, () => load())
 </script>
 
 <style scoped>
@@ -221,6 +240,11 @@ onMounted(load)
 .hint {
   color: #909399;
   font-size: 12px;
+}
+.report-body {
+  max-height: 70vh;
+  overflow: auto;
+  padding-right: 6px;
 }
 .report {
   padding: 0 8px;
@@ -241,9 +265,18 @@ h3 {
   margin: 18px 0 8px;
 }
 .text {
+  margin: 4px 0;
   line-height: 1.9;
   white-space: pre-wrap;
-  text-indent: 2em;
   color: #303133;
+}
+/* 正文段落首行缩进两字 */
+.text:not(.text-list) {
+  text-indent: 2em;
+}
+/* 分条罗列不缩进首行，用悬挂缩进让序号对齐，别出现「　　1. 依据」这种空洞排版 */
+.text-list {
+  padding-left: 1.6em;
+  text-indent: -1.6em;
 }
 </style>

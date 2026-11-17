@@ -25,7 +25,6 @@
 
     <el-descriptions :column="4" border class="meta">
       <el-descriptions-item label="项目编号">{{ project?.projectNo || '-' }}</el-descriptions-item>
-      <el-descriptions-item label="工程类型">{{ project?.engTypeName || '-' }}</el-descriptions-item>
       <el-descriptions-item label="地市">{{ project?.city || '-' }}</el-descriptions-item>
       <el-descriptions-item label="状态">
         <el-tag :type="statusTag(project?.status)" size="small">{{ project?.statusName }}</el-tag>
@@ -41,21 +40,27 @@
         <OverviewPanel :overview="overview" @go="tab = $event" />
       </el-tab-pane>
       <el-tab-pane :label="`资料与解析 (${overview?.fileCount ?? 0})`" name="files">
-        <FilePanel :project-id="numberId" @changed="refreshOverview" />
+        <FilePanel :project-id="numberId" @changed="refreshOverview" @go="tab = $event" />
       </el-tab-pane>
       <el-tab-pane :label="`工程量清单 (${overview?.boqCount ?? 0})`" name="boq">
         <BoqPanel
           :project-id="numberId"
           :highlight-row="highlightRow"
+          :refresh-key="dataVersion"
           @changed="refreshOverview"
           @go="tab = $event"
         />
       </el-tab-pane>
       <el-tab-pane :label="`疑点复核 (${overview?.issueTotal ?? 0})`" name="issues">
-        <IssuePanel :project-id="numberId" @locate="onLocate" @changed="refreshOverview" />
+        <IssuePanel
+          :project-id="numberId"
+          :refresh-key="dataVersion"
+          @locate="onLocate"
+          @changed="refreshOverview"
+        />
       </el-tab-pane>
       <el-tab-pane label="预审报告" name="report">
-        <ReportPanel :project-id="numberId" @changed="refreshOverview" />
+        <ReportPanel :project-id="numberId" :refresh-key="dataVersion" @changed="refreshOverview" />
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -83,6 +88,8 @@ const project = ref<ProjectVO>()
 const overview = ref<Overview>()
 const tab = ref<string>('overview')
 const highlightRow = ref<number>()
+/** 核查/生成报告完成后自增，通知已挂载的 Tab 面板重新取数（Tab 不销毁，不会重新 onMounted） */
+const dataVersion = ref(0)
 
 const checking = ref(false)
 const progress = ref(0)
@@ -133,6 +140,7 @@ function pollTask(taskId: number) {
         stopPoll()
         ElMessage.success(task.message || '核查完成')
         await refreshOverview()
+        dataVersion.value += 1
         tab.value = 'issues'
       } else if (task?.status === 'FAILED') {
         stopPoll()
@@ -159,6 +167,7 @@ async function generateReport() {
   const report = await reportApi.generate(numberId)
   ElMessage.success('报告初稿已生成')
   await refreshOverview()
+  dataVersion.value += 1
   tab.value = 'report'
   return report
 }

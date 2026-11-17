@@ -123,12 +123,13 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { issueApi, type IssueVO } from '@/api'
 import { levelTag, money } from '@/utils/format'
 
-const props = defineProps<{ projectId: number }>()
+/** refreshKey 由父组件在核查完成后自增，用来触发列表重载（Tab 已挂载时不会重新 onMounted） */
+const props = defineProps<{ projectId: number; refreshKey?: number }>()
 const emit = defineEmits<{ (e: 'locate', rowNo?: number): void; (e: 'changed'): void }>()
 
 const typeOptions: Record<string, string> = {
@@ -203,6 +204,12 @@ function exportExcel() {
 }
 
 onMounted(reload)
+watch(() => props.refreshKey, () => {
+  // 核查会清空并重算疑点，条数变少时当前页可能越界，回到第一页再拉
+  query.page = 1
+  selection.value = []
+  reload()
+})
 </script>
 
 <style scoped>

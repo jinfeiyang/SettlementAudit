@@ -52,31 +52,47 @@
       </el-table-column>
     </el-table>
 
-    <el-drawer v-model="previewVisible" :title="current?.title || '报告预览'" size="52%">
-      <div v-if="sections.length" class="report">
-        <h2 class="report-title">{{ current?.title }}</h2>
-        <div class="report-meta">
-          <span>项目：{{ current?.projectName }}</span>
-          <span>版本 V{{ current?.version }}</span>
-          <span>状态：{{ current?.statusName }}</span>
+    <el-dialog
+      v-model="previewVisible"
+      :title="current?.title || '报告预览'"
+      width="70%"
+      align-center
+      destroy-on-close
+    >
+      <div class="report-body">
+        <div v-if="sections.length" class="report">
+          <h2 class="report-title">{{ current?.title }}</h2>
+          <div class="report-meta">
+            <span>项目：{{ current?.projectName }}</span>
+            <span>版本 V{{ current?.version }}</span>
+            <span>状态：{{ current?.statusName }}</span>
+          </div>
+          <section v-for="(section, index) in sections" :key="index">
+            <h3>{{ section.title }}</h3>
+            <el-table v-if="section.type === 'table'" :data="toTableData(section)" size="small" border>
+              <el-table-column
+                v-for="(col, colIndex) in section.columns || []"
+                :key="colIndex"
+                :prop="`c${colIndex}`"
+                :label="col"
+                min-width="110"
+                show-overflow-tooltip
+              />
+            </el-table>
+            <template v-else>
+              <p
+                v-for="(line, lineIndex) in reportTextLines(section.text)"
+                :key="lineIndex"
+                :class="['text', { 'text-list': line.list }]"
+              >
+                {{ line.text }}
+              </p>
+            </template>
+          </section>
         </div>
-        <section v-for="(section, index) in sections" :key="index">
-          <h3>{{ section.title }}</h3>
-          <el-table v-if="section.type === 'table'" :data="toTableData(section)" size="small" border>
-            <el-table-column
-              v-for="(col, colIndex) in section.columns || []"
-              :key="colIndex"
-              :prop="`c${colIndex}`"
-              :label="col"
-              min-width="110"
-              show-overflow-tooltip
-            />
-          </el-table>
-          <p v-else class="text">{{ section.text }}</p>
-        </section>
+        <el-empty v-else description="报告内容为空" />
       </div>
-      <el-empty v-else description="报告内容为空" />
-    </el-drawer>
+    </el-dialog>
   </el-card>
 </template>
 
@@ -85,6 +101,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { projectApi, reportApi, type ProjectVO, type ReportContent, type ReportSection, type ReportVO } from '@/api'
 import { datetime, statusTag } from '@/utils/format'
+import { reportTextLines } from '@/utils/report'
 import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
@@ -174,10 +191,24 @@ onMounted(async () => {
 h3 {
   margin: 18px 0 8px;
 }
+.report-body {
+  max-height: 70vh;
+  overflow: auto;
+  padding-right: 6px;
+}
 .text {
+  margin: 4px 0;
   line-height: 1.9;
   white-space: pre-wrap;
-  text-indent: 2em;
   color: #303133;
+}
+/* 正文段落首行缩进两字 */
+.text:not(.text-list) {
+  text-indent: 2em;
+}
+/* 分条罗列不缩进首行，悬挂缩进让序号对齐 */
+.text-list {
+  padding-left: 1.6em;
+  text-indent: -1.6em;
 }
 </style>

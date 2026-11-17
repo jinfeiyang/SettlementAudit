@@ -21,6 +21,11 @@ export interface ProjectVO {
   projectName: string
   engType?: string
   engTypeName?: string
+  contractNo?: string
+  orderNo?: string
+  builderUnit?: string
+  supervisorUnit?: string
+  constructionFee?: number
   city?: string
   settleAmount?: number
   status: string
@@ -71,6 +76,10 @@ export interface BoqItemVO {
   id: number
   projectId: number
   rowNo?: number
+  /** QUOTA 工程量 / MATERIAL 乙供材料 / SUPPLY_MATERIAL 甲供材料 / SUPPLY_EQUIPMENT 甲供设备 */
+  itemType?: string
+  itemTypeName?: string
+  sourceSheet?: string
   itemCode?: string
   itemName: string
   featureDesc?: string

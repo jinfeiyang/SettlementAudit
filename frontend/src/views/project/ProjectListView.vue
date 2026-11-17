@@ -22,12 +22,6 @@
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
       </el-form-item>
-      <el-form-item label="工程类型">
-        <el-select v-model="query.engType" placeholder="全部" clearable style="width: 140px">
-          <el-option label="通信线路" value="LINE" />
-          <el-option label="设备安装" value="DEVICE" />
-        </el-select>
-      </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="reload">查询</el-button>
         <el-button @click="reset">重置</el-button>
@@ -35,14 +29,26 @@
     </el-form>
 
     <el-table v-loading="loading" :data="rows" empty-text="暂无项目，点击右上角新建">
-      <el-table-column prop="projectNo" label="项目编号" width="170" />
+      <el-table-column prop="projectNo" label="项目编号" width="170" show-overflow-tooltip />
       <el-table-column prop="projectName" label="项目名称" min-width="220" show-overflow-tooltip />
-      <el-table-column label="工程类型" width="110">
-        <template #default="{ row }">{{ row.engTypeName || '-' }}</template>
+      <el-table-column label="合同编号" width="170" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.contractNo || '-' }}</template>
       </el-table-column>
-      <el-table-column prop="city" label="地市" width="100" />
-      <el-table-column label="结算送审金额（元）" width="170" align="right">
+      <el-table-column label="订单编号" width="210" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.orderNo || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="施工单位" min-width="170" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.builderUnit || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="监理单位" min-width="190" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.supervisorUnit || '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="city" label="地市" width="90" />
+      <el-table-column label="结算送审金额（元）" width="160" align="right">
         <template #default="{ row }">{{ money(row.settleAmount) }}</template>
+      </el-table-column>
+      <el-table-column label="施工费（元）" width="130" align="right">
+        <template #default="{ row }">{{ money(row.constructionFee) }}</template>
       </el-table-column>
       <el-table-column label="状态" width="110">
         <template #default="{ row }">
@@ -79,13 +85,23 @@
         <el-input v-model="form.projectName" placeholder="如：XX 市 XX 段光缆线路工程" />
       </el-form-item>
       <el-form-item label="项目编号">
-        <el-input v-model="form.projectNo" placeholder="留空自动生成" :disabled="editing" />
+        <el-input
+          v-model="form.projectNo"
+          :placeholder="editing ? '留空则保持原编号不变' : '留空自动生成'"
+          clearable
+        />
       </el-form-item>
-      <el-form-item label="工程类型" prop="engType">
-        <el-radio-group v-model="form.engType">
-          <el-radio value="LINE">通信线路</el-radio>
-          <el-radio value="DEVICE">设备安装</el-radio>
-        </el-radio-group>
+      <el-form-item label="合同编号">
+        <el-input v-model="form.contractNo" placeholder="选填，如 CU12-3301-2024-000368" />
+      </el-form-item>
+      <el-form-item label="订单编号">
+        <el-input v-model="form.orderNo" placeholder="选填，如 PO-zj-zjszysc-202605080003744" />
+      </el-form-item>
+      <el-form-item label="施工单位">
+        <el-input v-model="form.builderUnit" placeholder="选填" />
+      </el-form-item>
+      <el-form-item label="监理单位">
+        <el-input v-model="form.supervisorUnit" placeholder="选填" />
       </el-form-item>
       <el-form-item label="地市">
         <el-input v-model="form.city" placeholder="如：杭州" />
@@ -93,6 +109,10 @@
       <el-form-item label="结算送审金额">
         <el-input-number v-model="form.settleAmount" :min="0" :step="1000" :precision="2" style="width: 220px" />
         <span class="unit">元</span>
+      </el-form-item>
+      <el-form-item label="施工费">
+        <el-input-number v-model="form.constructionFee" :min="0" :step="1000" :precision="2" style="width: 220px" />
+        <span class="unit">元（不含税）</span>
       </el-form-item>
       <el-form-item label="备注">
         <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="选填" />
@@ -131,19 +151,24 @@ const statusOptions = [
   { value: 'ARCHIVED', label: '已归档' },
 ]
 
-const query = reactive({ keyword: '', status: '', engType: '', page: 1, size: 10 })
+const query = reactive({ keyword: '', status: '', page: 1, size: 10 })
+// 工程类型页面暂不展示，仍按 LINE 提交，保证后端校验与字典展示有值
 const form = reactive<any>({
   projectName: '',
   projectNo: '',
   engType: 'LINE',
+  contractNo: '',
+  orderNo: '',
+  builderUnit: '',
+  supervisorUnit: '',
   city: '',
   settleAmount: undefined,
+  constructionFee: undefined,
   remark: '',
 })
 
 const rules: FormRules = {
   projectName: [{ required: true, message: '请输入项目名称', trigger: 'blur' }],
-  engType: [{ required: true, message: '请选择工程类型', trigger: 'change' }],
 }
 
 async function reload() {
@@ -160,7 +185,6 @@ async function reload() {
 function reset() {
   query.keyword = ''
   query.status = ''
-  query.engType = ''
   query.page = 1
   reload()
 }
@@ -183,8 +207,13 @@ function openCreate() {
     projectName: '',
     projectNo: '',
     engType: 'LINE',
+    contractNo: '',
+    orderNo: '',
+    builderUnit: '',
+    supervisorUnit: '',
     city: '',
     settleAmount: undefined,
+    constructionFee: undefined,
     remark: '',
   })
   dialogVisible.value = true
@@ -197,8 +226,13 @@ function openEdit(row: ProjectVO) {
     projectName: row.projectName,
     projectNo: row.projectNo,
     engType: row.engType || 'LINE',
+    contractNo: row.contractNo || '',
+    orderNo: row.orderNo || '',
+    builderUnit: row.builderUnit || '',
+    supervisorUnit: row.supervisorUnit || '',
     city: row.city,
     settleAmount: row.settleAmount,
+    constructionFee: row.constructionFee,
     remark: row.remark,
   })
   dialogVisible.value = true
@@ -211,7 +245,11 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = { ...form, settleAmount: form.settleAmount ?? null }
+    const payload = {
+      ...form,
+      settleAmount: form.settleAmount ?? null,
+      constructionFee: form.constructionFee ?? null,
+    }
     if (editing.value && editingId.value) {
       await projectApi.update(editingId.value, payload)
       ElMessage.success('已保存')
