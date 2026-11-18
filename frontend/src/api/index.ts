@@ -255,6 +255,7 @@ export const reportApi = {
   update: (id: number, data: { title?: string; content?: string }) =>
     request.put<ReportVO>(`/reports/${id}`, data),
   confirm: (id: number) => request.post<ReportVO>(`/reports/${id}/confirm`),
+  remove: (id: number) => request.delete<void>(`/reports/${id}`),
   exportWord: (id: number, name: string) => download(`/reports/${id}/export`, `${name}.docx`),
 }
 
@@ -282,4 +283,14 @@ function uploadFile(url: string, file: File) {
 
 export const dashboardApi = {
   stats: () => request.get<Record<string, any>>('/dashboard/stats'),
+}
+
+export interface AiSettings {
+  llmAttributionEnabled: boolean
+  reportAiEnabled: boolean
+}
+
+export const settingsApi = {
+  get: () => request.get<AiSettings>('/settings'),
+  update: (data: AiSettings) => request.put<AiSettings>('/settings', data),
 }

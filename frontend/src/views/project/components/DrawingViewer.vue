@@ -110,7 +110,6 @@ async function init() {
       clearColor: new THREE.Color('#ffffff'),
       colorCorrection: true,
     })
-    // Load 内部已按 scene.bounds 自动定位视图，无需再调 fitView（重复调用会错位）
     await viewer.Load({ url: dxfUrl, fonts: [FONT_URL] })
     viewerReady.value = true
     layers.value = [...viewer.GetLayers(false)]

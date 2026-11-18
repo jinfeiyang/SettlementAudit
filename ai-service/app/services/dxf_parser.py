@@ -930,6 +930,60 @@ def _to_number(raw: str) -> float | None:
         return None
 
 
+# 定额编号 + 名称写进同一个 TEXT 的格式：可选序号 + 编号(字母+数字-数字) + 空白 + 名称。
+# 短横前要求带数字（TXL4-049），避免误伤材料型号（GYTS-48B1）这类「字母-数字」写法。
+_QUOTA_CELL_RE = re.compile(
+    r"^\s*(?:(\d{1,3})\s+)?([A-Za-z]{2,8}\d{1,3}[-–—]\d{2,5})\s+(.+?)\s*$"
+)
+_QUOTA_CODE_KEYS = ("定额编号", "项目编码", "编号")
+
+
+def _normalize_quota_cells(tables: list[dict[str, Any]]) -> None:
+    """拆开「定额编号 + 项目名称」挤在同一格里的单元格，就地修正 tables。
+
+    CAD 里这两列之间常没画竖线，一段 TEXT（如「TXL4-049 光（电）缆上线洞楼层间防火封堵
+    光交封堵」）的插入点落在编号列，整段就被归进编号列、名称列空着。后果有两处：
+    明细里编号列混着名称、名称列空；归纳统计取名称列时空值整行被丢。这里按定额编号
+    模式拆开，编号归编号列、名称归名称列；表格缺编号列时补一列，并把原格里的序号留下。
+    """
+    for table in tables:
+        columns = table["columns"]
+        name_col = _match_column(columns, _MATERIAL_NAME_KEYS)
+        if name_col is None:
+            continue
+        code_col = _match_column(columns, _QUOTA_CODE_KEYS)
+        seq_col = _match_column(columns, ("序号",))
+
+        # 先找本表所有「编号+名称」合并格，记录 (行号, 原列号, 序号, 编号, 名称)
+        merged_cells: list[tuple[int, int, str, str, str]] = []
+        for row_index, row in enumerate(table["rows"]):
+            for cell_index, cell in enumerate(row):
+                match = _QUOTA_CELL_RE.match(cell or "")
+                if match and match.group(3).strip():
+                    merged_cells.append((row_index, cell_index, match.group(1) or "",
+                                         match.group(2), match.group(3).strip()))
+                    break
+        if not merged_cells:
+            continue
+
+        # 缺编号列时补一列（放在名称列左侧），后续名称列及以右的列号整体右移
+        if code_col is None:
+            columns.insert(name_col, "定额编号")
+            for row in table["rows"]:
+                row.insert(name_col, "")
+            code_col = name_col
+            name_col += 1
+            if seq_col is not None and seq_col >= code_col:
+                seq_col += 1
+
+        for row_index, cell_index, seq, code, name in merged_cells:
+            row = table["rows"][row_index]
+            # 原合并格若是序号列且带序号，把序号留下；否则清空
+            row[cell_index] = seq if (cell_index == seq_col and seq) else ""
+            row[name_col] = name
+            row[code_col] = code
+
+
 def summarize_materials(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """按「名称 + 规格 + 单位」汇总各表数量，得到归纳统计表。"""
     merged: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -1084,6 +1138,8 @@ def extract_material_tables(doc, diagnostics: dict[str, int] | None = None,
         tables.append(table)
         if len(tables) >= _TABLE_MAX_TABLES:
             break
+    # 拆开「定额编号+名称」合并格：明细展示与归纳统计都依赖正确的列归属
+    _normalize_quota_cells(tables)
     return tables
 
 

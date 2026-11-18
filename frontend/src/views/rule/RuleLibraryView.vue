@@ -22,6 +22,7 @@
             <el-option label="设备安装" value="DEVICE" />
           </el-select>
           <el-button type="primary" @click="loadQuota">查询</el-button>
+          <el-button @click="resetQuota">重置</el-button>
           <el-button type="primary" plain @click="openQuotaCreate">新增定额</el-button>
           <el-upload :show-file-list="false" :http-request="importQuota" accept=".xlsx,.xls">
             <el-button>导入 Excel</el-button>
@@ -80,6 +81,7 @@
             <el-option label="设备安装" value="DEVICE" />
           </el-select>
           <el-button type="primary" @click="loadFee">查询</el-button>
+          <el-button @click="resetFee">重置</el-button>
           <el-button type="primary" plain @click="openFeeCreate">新增费用项</el-button>
           <el-upload :show-file-list="false" :http-request="importFee" accept=".xlsx,.xls">
             <el-button>导入 Excel</el-button>
@@ -273,6 +275,20 @@ async function loadFee() {
   } finally {
     feeLoading.value = false
   }
+}
+
+function resetQuota() {
+  quotaQuery.keyword = ''
+  quotaQuery.engType = ''
+  quotaQuery.page = 1
+  loadQuota()
+}
+
+function resetFee() {
+  feeQuery.keyword = ''
+  feeQuery.engType = ''
+  feeQuery.page = 1
+  loadFee()
 }
 
 function openQuotaCreate() {

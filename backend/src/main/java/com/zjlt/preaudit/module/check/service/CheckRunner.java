@@ -5,6 +5,7 @@ import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.util.JsonUtil;
 import com.zjlt.preaudit.common.util.TextUtil;
 import com.zjlt.preaudit.module.ai.client.AiServiceClient;
+import com.zjlt.preaudit.module.system.service.AiSettingsService;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
 import com.zjlt.preaudit.module.boq.mapper.BoqItemMapper;
 import com.zjlt.preaudit.module.check.dto.CheckDtos;
@@ -50,6 +51,7 @@ public class CheckRunner {
     private final FeeCheckService feeCheckService;
     private final DrawingCheckService drawingCheckService;
     private final AiServiceClient aiClient;
+    private final AiSettingsService aiSettingsService;
 
     @Value("${preaudit.check.amount-tolerance:1.00}")
     private BigDecimal amountTolerance;
@@ -59,9 +61,6 @@ public class CheckRunner {
 
     @Value("${preaudit.check.fee-deviation-high-threshold:0.15}")
     private BigDecimal feeHighThreshold;
-
-    @Value("${preaudit.check.llm-attribution-enabled:false}")
-    private boolean llmAttributionEnabled;
 
     @Async("checkExecutor")
     public void runAsync(Long taskId) {
@@ -80,9 +79,17 @@ public class CheckRunner {
             return;
         }
         Project project = projectService.requireProject(task.getProjectId());
-        List<BoqItem> items = boqItemMapper.selectList(Wrappers.<BoqItem>lambdaQuery()
+        List<BoqItem> allItems = boqItemMapper.selectList(Wrappers.<BoqItem>lambdaQuery()
                 .eq(BoqItem::getProjectId, project.getId())
                 .orderByAsc(BoqItem::getRowNo));
+        // 混合计价项目：存在固定单价施工费 / 其他费 / 规则取费行时，取费核查只覆盖定额法那一小块，
+        // 不能拿它跟全口径送审金额比偏差（会放大成几千个百分点），改为口径提示。
+        boolean mixedPricing = allItems.stream().anyMatch(i ->
+                Dict.isPricedExtra(i.getItemType())
+                        || (i.getFeatureDesc() != null && i.getFeatureDesc().contains(Dict.FIXED_PRICE_TAG)));
+        // 取费/固定单价/其他费行都是已计价或规则生成的行，不是原始工程量行：
+        // 排除以免重复计费、误报缺套定额；它们只参与清单合计展示。
+        List<BoqItem> items = allItems.stream().filter(i -> !Dict.isPricedExtra(i.getItemType())).toList();
         if (items.isEmpty()) {
             fail(taskId, "清单为空，请先导入工程量清单后再核查");
             return;
@@ -130,7 +137,7 @@ public class CheckRunner {
         }
 
         CheckDtos.FeeResult feeResult = feeCheckService.check(project, items, quotas, fees);
-        collectFeeIssues(project.getId(), feeResult, fees, issues);
+        collectFeeIssues(project.getId(), feeResult, fees, issues, mixedPricing);
 
         // B3 图纸-清单核对：用竣工图解析出的材料表跟清单比量（没有图纸解析结果时自动跳过）
         task.setProgress(88);
@@ -138,7 +145,7 @@ public class CheckRunner {
         taskMapper.updateById(task);
         issues.addAll(drawingCheckService.check(project, items));
 
-        if (llmAttributionEnabled) {
+        if (aiSettingsService.isLlmAttributionEnabled()) {
             enrichWithAi(issues);
         }
         issues.forEach(issueMapper::insert);
@@ -151,7 +158,8 @@ public class CheckRunner {
 
         CheckDtos.CheckSummary summary = new CheckDtos.CheckSummary(items.size(), issues.size(), high, medium, low,
                 hitRate, feeResult.directCost(), feeResult.feeTotal(), feeResult.expectedAmount(),
-                feeResult.settleAmount(), feeResult.deviation(), System.currentTimeMillis() - start);
+                feeResult.settleAmount(), mixedPricing ? null : feeResult.deviation(),
+                System.currentTimeMillis() - start);
 
         task.setStatus(Dict.TASK_SUCCESS);
         task.setProgress(100);
@@ -247,7 +255,8 @@ public class CheckRunner {
         }
     }
 
-    private void collectFeeIssues(Long projectId, CheckDtos.FeeResult fee, List<RuleFee> fees, List<Issue> issues) {
+    private void collectFeeIssues(Long projectId, CheckDtos.FeeResult fee, List<RuleFee> fees,
+                                  List<Issue> issues, boolean mixedPricing) {
         if (fees.isEmpty()) {
             Issue issue = new Issue();
             issue.setProjectId(projectId);
@@ -257,6 +266,30 @@ public class CheckRunner {
             issue.setRefType("PROJECT");
             issue.setTitle("未配置适用取费规则，取费核查未执行");
             issue.setDetail("规则库中未找到本工程类型可用的取费规则，请在「规则库-取费规则」中补充后重新核查。");
+            issue.setReviewStatus(Dict.REVIEW_PENDING);
+            issues.add(issue);
+            return;
+        }
+        // 混合计价：清单里含固定单价施工费、其他费、规则取费行等已计价部分，
+        // 而取费核查只基于定额工程量行。两者口径不同，拿局部应计金额与全口径送审金额比
+        // 会算出几千个百分点的假偏差，因此只给口径提示，不下偏差结论。
+        if (mixedPricing) {
+            Issue issue = new Issue();
+            issue.setProjectId(projectId);
+            issue.setIssueType(Dict.ISSUE_FEE);
+            issue.setLevel(Dict.LEVEL_LOW);
+            issue.setRuleCode("B2-MIXED-PRICING");
+            issue.setRefType("PROJECT");
+            issue.setTitle("混合计价项目，取费偏差未判定");
+            issue.setDetail("本项目清单含固定单价施工费 / 工程建设其他费 / 规则取费行，"
+                    + "属混合计价。取费核查按现行规则仅覆盖定额法部分：直接费 "
+                    + fee.directCost().toPlainString() + " 元，人工费基数 "
+                    + fee.laborCost().toPlainString() + " 元，核算取费合计 "
+                    + fee.feeTotal().toPlainString() + " 元，该部分应计合计 "
+                    + fee.expectedAmount().toPlainString() + " 元。"
+                    + "这部分金额与完整送审金额 " + (fee.settleAmount() == null ? "未填写"
+                    : fee.settleAmount().toPlainString()) + " 元口径不同，不做全口径偏差比较。"
+                    + "清单合计已在「工程量清单」按结算口径汇总，可直接与送审金额核对。");
             issue.setReviewStatus(Dict.REVIEW_PENDING);
             issues.add(issue);
             return;
@@ -321,26 +354,35 @@ public class CheckRunner {
         issues.add(issue);
     }
 
-    /** LLM 归因（仅对高风险疑点、仅生成解释，不影响金额与结论） */
+    /** LLM 归因：开关开启后对所有疑点并发生成解释，仅生成文字、不影响金额与结论 */
     private void enrichWithAi(List<Issue> issues) {
-        int budget = 10;
-        for (Issue issue : issues) {
-            if (budget <= 0) {
-                break;
+        int budget = 50;
+        List<Issue> targets = issues.stream().limit(budget).toList();
+        if (targets.isEmpty()) {
+            return;
+        }
+        // 专用小线程池并发调用 AI，避免串行累加延迟；用完即关，不占用核查线程池
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(Math.min(targets.size(), 6));
+        try {
+            List<java.util.concurrent.CompletableFuture<Void>> futures = new ArrayList<>();
+            for (Issue issue : targets) {
+                futures.add(java.util.concurrent.CompletableFuture.runAsync(() -> {
+                    String prompt = "请针对该造价预审疑点给出不超过 80 字的核查建议，说明应核对哪些资料与口径，不做金额判定。直接输出纯文本，不要输出 JSON 或代码围栏。";
+                    Optional<AiServiceClient.ChatResp> resp = aiClient.chat("ATTRIBUTION", prompt, Map.of(
+                            "title", issue.getTitle(),
+                            "detail", issue.getDetail() == null ? "" : issue.getDetail(),
+                            "refValue", issue.getRefValue() == null ? "" : issue.getRefValue()));
+                    resp.ifPresent(r -> {
+                        issue.setAiNote(TextUtil.truncate(r.content(), 900));
+                        issue.setAiModel(r.model());
+                    });
+                }, pool));
             }
-            if (issue.getLevel() != Dict.LEVEL_HIGH) {
-                continue;
-            }
-            budget--;
-            String prompt = "请针对该造价预审疑点给出不超过 80 字的核查建议，说明应核对哪些资料与口径，不做金额判定。";
-            Optional<AiServiceClient.ChatResp> resp = aiClient.chat("ATTRIBUTION", prompt, Map.of(
-                    "title", issue.getTitle(),
-                    "detail", issue.getDetail() == null ? "" : issue.getDetail(),
-                    "refValue", issue.getRefValue() == null ? "" : issue.getRefValue()));
-            resp.ifPresent(r -> {
-                issue.setAiNote(TextUtil.truncate(r.content(), 900));
-                issue.setAiModel(r.model());
-            });
+            java.util.concurrent.CompletableFuture.allOf(
+                    futures.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
+        } finally {
+            pool.shutdown();
         }
     }
 

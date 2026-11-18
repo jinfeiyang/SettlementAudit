@@ -21,6 +21,9 @@ scripts/weekly_report.md
 scripts/weekly_report.txt
 scripts/.aitable_records.json
 
+# 浏览器自动化工具的页面快照（本地调试产物）
+.playwright-cli/
+
 # 系统与 IDE
 .DS_Store
 .idea/

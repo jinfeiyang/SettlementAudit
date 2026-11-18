@@ -7,6 +7,7 @@ import com.zjlt.preaudit.common.security.UserContext;
 import com.zjlt.preaudit.common.util.JsonUtil;
 import com.zjlt.preaudit.common.util.TextUtil;
 import com.zjlt.preaudit.module.ai.client.AiServiceClient;
+import com.zjlt.preaudit.module.system.service.AiSettingsService;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
 import com.zjlt.preaudit.module.boq.mapper.BoqItemMapper;
 import com.zjlt.preaudit.module.issue.dto.IssueDtos;
@@ -25,10 +26,12 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.xwpf.usermodel.ParagraphAlignment;
+import org.apache.poi.xwpf.usermodel.TableRowHeightRule;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
+import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -60,6 +63,7 @@ public class ReportService {
     private final IssueService issueService;
     private final AsyncTaskMapper asyncTaskMapper;
     private final AiServiceClient aiClient;
+    private final AiSettingsService aiSettingsService;
 
     /** 生成报告初稿：确定性数据装配 + AI 成文（不可用时模板成文） */
     @Transactional
@@ -75,7 +79,8 @@ public class ReportService {
         }
         IssueDtos.IssueStats stats = issueService.stats(projectId);
         List<BoqItem> items = boqItemMapper.selectList(Wrappers.<BoqItem>lambdaQuery()
-                .eq(BoqItem::getProjectId, projectId).orderByAsc(BoqItem::getRowNo));
+                .eq(BoqItem::getProjectId, projectId).orderByAsc(BoqItem::getRowNo)).stream()
+                .filter(i -> !Dict.isPricedExtra(i.getItemType())).toList();
         Map<String, Object> result = JsonUtil.toMap(task.getResultJson());
 
         List<Issue> topIssues = issueMapper.selectList(Wrappers.<Issue>lambdaQuery()
@@ -122,17 +127,20 @@ public class ReportService {
 
         String advice = adviceText(stats, result);
         String aiModel = null;
-        Optional<AiServiceClient.ChatResp> ai = aiClient.chat("REPORT",
-                "请基于以下预审核查统计给出不超过 200 字的处理建议，面向造价人员，仅做建议与解释，"
-                        + "不得编造金额、不得下审计结论。",
-                Map.of("projectName", project.getProjectName(),
-                        "engType", Dict.engType(project.getEngType()),
-                        "issueHigh", stats.high(), "issueMedium", stats.medium(), "issueLow", stats.low(),
-                        "hitRate", String.valueOf(result.get("hitRate")),
-                        "topIssues", topIssues.stream().limit(10).map(Issue::getTitle).toList()));
-        if (ai.isPresent()) {
-            advice = ai.get().content().trim();
-            aiModel = ai.get().model();
+        // 报告 AI 成文受独立开关控制；关闭时直接用模板文案，不调用模型
+        if (aiSettingsService.isReportAiEnabled()) {
+            Optional<AiServiceClient.ChatResp> ai = aiClient.chat("REPORT",
+                    "请基于以下预审核查统计给出不超过 200 字的处理建议，面向造价人员，仅做建议与解释，"
+                            + "不得编造金额、不得下审计结论。直接输出纯文本，不要输出 JSON 或代码围栏。",
+                    Map.of("projectName", project.getProjectName(),
+                            "engType", Dict.engType(project.getEngType()),
+                            "issueHigh", stats.high(), "issueMedium", stats.medium(), "issueLow", stats.low(),
+                            "hitRate", String.valueOf(result.get("hitRate")),
+                            "topIssues", topIssues.stream().limit(10).map(Issue::getTitle).toList()));
+            if (ai.isPresent()) {
+                advice = plainText(ai.get().content());
+                aiModel = ai.get().model();
+            }
         }
         sections.add(ReportDtos.Section.text("五、处理建议", advice));
         sections.add(ReportDtos.Section.text("六、复核情况",
@@ -167,6 +175,16 @@ public class ReportService {
 
     public ReportDtos.ReportVO get(Long id) {
         return toVO(requireReport(id));
+    }
+
+    /** 删除报告：已确认的报告为正式结论，不允许删除 */
+    @Transactional
+    public void delete(Long id) {
+        Report report = requireReport(id);
+        if (Dict.REPORT_CONFIRMED.equals(report.getStatus())) {
+            throw new BizException("报告已确认，不能删除");
+        }
+        reportMapper.deleteById(id);
     }
 
     /** 编辑报告（标题/结构化内容） */
@@ -270,6 +288,12 @@ public class ReportService {
         List<List<String>> rows = section.rows() == null ? List.of() : section.rows();
         XWPFTable table = doc.createTable(rows.size() + 1, columns.size());
         table.setWidth("100%");
+        // 行高放宽：默认行高贴合 9 磅字号显得挤，设最小 18 磅（360 twip），
+        // 用 AT_LEAST 让内容较长时仍能自动撑高，不会被固定高度截断。
+        for (XWPFTableRow row : table.getRows()) {
+            row.setHeight(360);
+            row.setHeightRule(TableRowHeightRule.AT_LEAST);
+        }
         for (int c = 0; c < columns.size(); c++) {
             setCellText(table.getRow(0), c, columns.get(c), true);
         }
@@ -286,7 +310,11 @@ public class ReportService {
         if (row.getCell(index) == null) {
             row.addNewTableCell();
         }
-        XWPFParagraph paragraph = row.getCell(index).getParagraphs().get(0);
+        XWPFTableCell cell = row.getCell(index);
+        // 内容水平、垂直都居中
+        cell.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER);
+        XWPFParagraph paragraph = cell.getParagraphs().get(0);
+        paragraph.setAlignment(ParagraphAlignment.CENTER);
         XWPFRun run = paragraph.createRun();
         run.setText(nvl(text));
         run.setBold(bold);
@@ -375,6 +403,37 @@ public class ReportService {
 
     private String nvl(String s) {
         return TextUtil.nullToEmpty(s);
+    }
+
+    /** 兜底去掉模型可能输出的 ```json 代码围栏，取 advice/suggestion/attribution 文本字段 */
+    private String plainText(String content) {
+        String text = nvl(content).trim();
+        if (text.startsWith("```")) {
+            int nl = text.indexOf('\n');
+            if (nl > 0) {
+                text = text.substring(nl + 1);
+            }
+            int fence = text.lastIndexOf("```");
+            if (fence >= 0) {
+                text = text.substring(0, fence);
+            }
+            text = text.trim();
+        }
+        if (text.startsWith("{") && text.endsWith("}")) {
+            try {
+                com.fasterxml.jackson.databind.JsonNode node =
+                        new com.fasterxml.jackson.databind.ObjectMapper().readTree(text);
+                for (String key : new String[]{"advice", "suggestion", "attribution", "content", "text"}) {
+                    com.fasterxml.jackson.databind.JsonNode value = node.get(key);
+                    if (value != null && value.isTextual() && !value.asText().isBlank()) {
+                        return value.asText().trim();
+                    }
+                }
+            } catch (Exception ignored) {
+                // 非 JSON 或解析失败时保留原文本
+            }
+        }
+        return text;
     }
 
     private ReportDtos.ReportVO toVO(Report r) {

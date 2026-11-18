@@ -140,14 +140,16 @@ public class RuleService {
             quota.setVersion(excelVersion(ExcelUtil.cell(row, idxVersion)));
             quota.setEffectiveDate(parseDate(ExcelUtil.cell(row, idxDate)));
             quota.setStatus(1);
-            RuleQuota exist = quotaMapper.selectOne(Wrappers.<RuleQuota>lambdaQuery()
-                    .eq(RuleQuota::getQuotaCode, quota.getQuotaCode())
-                    .eq(RuleQuota::getVersion, quota.getVersion())
-                    .last("LIMIT 1"));
-            if (exist == null) {
+            // 用含逻辑删除的查询判重：唯一索引不含 deleted，若只查未删除会误判为不存在，
+            // INSERT 时撞唯一索引 -> DuplicateKeyException「数据已存在」。命中已删除记录则恢复。
+            Long existId = quotaMapper.findIdIncludingDeleted(quota.getQuotaCode(), quota.getVersion());
+            if (existId == null) {
                 quotaMapper.insert(quota);
             } else {
-                quota.setId(exist.getId());
+                // @TableLogic 使 updateById 自带 deleted=0 条件，已删除记录需先用原生 SQL 恢复
+                quotaMapper.restoreById(existId);
+                quota.setId(existId);
+                quota.setDeleted(0);
                 quotaMapper.updateById(quota);
             }
             imported++;
@@ -251,15 +253,14 @@ public class RuleService {
             fee.setVersion(excelVersion(ExcelUtil.cell(row, idxVersion)));
             fee.setEffectiveDate(parseDate(ExcelUtil.cell(row, idxDate)));
             fee.setStatus(1);
-            RuleFee exist = feeMapper.selectOne(Wrappers.<RuleFee>lambdaQuery()
-                    .eq(RuleFee::getFeeCode, fee.getFeeCode())
-                    .eq(RuleFee::getEngCategory, fee.getEngCategory() == null ? "" : fee.getEngCategory())
-                    .eq(RuleFee::getVersion, fee.getVersion())
-                    .last("LIMIT 1"));
-            if (exist == null) {
+            Long existId = feeMapper.findIdIncludingDeleted(fee.getFeeCode(),
+                    fee.getEngCategory() == null ? "" : fee.getEngCategory(), fee.getVersion());
+            if (existId == null) {
                 feeMapper.insert(fee);
             } else {
-                fee.setId(exist.getId());
+                feeMapper.restoreById(existId);
+                fee.setId(existId);
+                fee.setDeleted(0);
                 feeMapper.updateById(fee);
             }
             imported++;

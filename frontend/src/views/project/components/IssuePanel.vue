@@ -43,14 +43,14 @@
         </template>
       </el-table-column>
       <el-table-column prop="issueTypeName" label="类型" width="110" />
-      <el-table-column prop="title" label="疑点标题" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="title" label="疑点标题" min-width="300" class-name="wrap-cell" />
       <el-table-column label="清单行号" width="100" align="center">
         <template #default="{ row }">
           <el-button v-if="row.rowNo" link type="primary" @click="locate(row)">{{ row.rowNo }}</el-button>
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column prop="itemName" label="关联清单项" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="itemName" label="关联清单项" min-width="280" class-name="wrap-cell" />
       <el-table-column label="复核状态" width="110">
         <template #default="{ row }">
           <el-tag :type="reviewTag(row.reviewStatus)" size="small" effect="plain">
@@ -180,6 +180,11 @@ function openDetail(row: IssueVO) {
 }
 
 function locate(row: IssueVO) {
+  // 项目级疑点（如混合计价取费口径提示）没有对应清单行，跳过去也只会看到一张无关清单
+  if (!row.rowNo) {
+    ElMessage.warning('该疑点是项目级问题，没有对应的清单行')
+    return
+  }
   detailVisible.value = false
   emit('locate', row.rowNo)
 }
@@ -237,5 +242,14 @@ watch(() => props.refreshKey, () => {
 }
 h4 {
   margin: 18px 0 8px;
+}
+/* 疑点标题、关联清单项多是长中文，省略号截断后核对时看不全，统一换行完整展示 */
+:deep(.el-table .cell) {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.45;
+}
+:deep(.wrap-cell .cell) {
+  padding: 6px 10px;
 }
 </style>

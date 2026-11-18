@@ -29,18 +29,18 @@
     </el-form>
 
     <el-table v-loading="loading" :data="rows" empty-text="暂无项目，点击右上角新建">
-      <el-table-column prop="projectNo" label="项目编号" width="170" show-overflow-tooltip />
-      <el-table-column prop="projectName" label="项目名称" min-width="220" show-overflow-tooltip />
-      <el-table-column label="合同编号" width="170" show-overflow-tooltip>
+      <el-table-column prop="projectNo" label="项目编号" width="170" class-name="wrap-cell" />
+      <el-table-column prop="projectName" label="项目名称" min-width="300" class-name="wrap-cell" />
+      <el-table-column label="合同编号" width="240" class-name="nowrap-cell">
         <template #default="{ row }">{{ row.contractNo || '-' }}</template>
       </el-table-column>
-      <el-table-column label="订单编号" width="210" show-overflow-tooltip>
+      <el-table-column label="订单编号" width="330" class-name="nowrap-cell">
         <template #default="{ row }">{{ row.orderNo || '-' }}</template>
       </el-table-column>
-      <el-table-column label="施工单位" min-width="170" show-overflow-tooltip>
+      <el-table-column label="施工单位" min-width="200" class-name="wrap-cell">
         <template #default="{ row }">{{ row.builderUnit || '-' }}</template>
       </el-table-column>
-      <el-table-column label="监理单位" min-width="190" show-overflow-tooltip>
+      <el-table-column label="监理单位" min-width="200" class-name="wrap-cell">
         <template #default="{ row }">{{ row.supervisorUnit || '-' }}</template>
       </el-table-column>
       <el-table-column prop="city" label="地市" width="90" />
@@ -295,5 +295,18 @@ onMounted(reload)
 .unit {
   margin-left: 8px;
   color: #909399;
+}
+/* 项目名称、单位名称偏长，省略号截断后看不清，改为换行完整展示 */
+:deep(.wrap-cell .cell) {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.45;
+  padding: 4px 8px;
+}
+/* 合同/订单编号是连贯的一串字符，折行反而难读，列宽给够后单行展示 */
+:deep(.nowrap-cell .cell) {
+  white-space: nowrap;
+  overflow: visible;
+  padding: 4px 8px;
 }
 </style>

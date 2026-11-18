@@ -44,9 +44,9 @@
           <el-tag :type="levelTag(row.level)" size="small" effect="dark">{{ row.levelName }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="projectName" label="项目" width="200" show-overflow-tooltip />
+      <el-table-column prop="projectName" label="项目" min-width="300" class-name="wrap-cell" />
       <el-table-column prop="issueTypeName" label="类型" width="110" />
-      <el-table-column prop="title" label="疑点标题" min-width="220" class-name="wrap-cell" />
+      <el-table-column prop="title" label="疑点标题" min-width="260" class-name="wrap-cell" />
       <el-table-column prop="detail" label="判定依据" min-width="360" class-name="wrap-cell">
         <template #default="{ row }">{{ row.detail || '-' }}</template>
       </el-table-column>
@@ -85,12 +85,13 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { issueApi, projectApi, type IssueVO, type ProjectVO } from '@/api'
 import { levelTag } from '@/utils/format'
 
 const router = useRouter()
+const route = useRoute()
 const rows = ref<IssueVO[]>([])
 const projects = ref<ProjectVO[]>([])
 const total = ref(0)
@@ -147,7 +148,12 @@ function onPageChange(page: number) {
 }
 
 function locate(row: IssueVO) {
-  router.push({ path: `/projects/${row.projectId}`, query: { tab: 'boq', row: String(row.rowNo ?? '') } })
+  // 项目级疑点没有清单行号，跳过去只能看到一张无关清单，直接说明
+  if (!row.rowNo) {
+    ElMessage.warning('该疑点是项目级问题，没有对应的清单行')
+    return
+  }
+  router.push({ path: `/projects/${row.projectId}`, query: { tab: 'boq', row: String(row.rowNo) } })
 }
 
 async function review(row: IssueVO, action: 'CONFIRM' | 'REJECT') {
@@ -174,6 +180,20 @@ function exportExcel() {
 }
 
 onMounted(async () => {
+  // 工作台卡片/图表跳转带来的筛选，在首次查询前预置：
+  // 待复核疑点卡 → reviewStatus；分级柱图 → level；类型饼图 → issueType
+  const status = route.query.reviewStatus as string | undefined
+  if (status) {
+    query.reviewStatus = status
+  }
+  const level = route.query.level as string | undefined
+  if (level) {
+    query.level = Number(level)
+  }
+  const issueType = route.query.issueType as string | undefined
+  if (issueType) {
+    query.issueType = issueType
+  }
   const res = await projectApi.page({ page: 1, size: 100 })
   projects.value = res.records
   await reload()

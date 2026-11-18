@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _CACHE_SUBDIR = "dxf"
 
 # DXF 后处理流程版本：后处理步骤有变化时递增，已缓存图纸会从 raw 重新跑一遍后处理。
-PIPELINE_VERSION = "5"
+PIPELINE_VERSION = "6"
 
 # MTEXT 内联字高码：\H3.175x; 或 \H3.175;
 _MTEXT_HEIGHT_RE = re.compile(r"\\H([\d.]+)x?;")
@@ -184,6 +184,87 @@ def expand_tables(doc) -> int:
     return expanded
 
 
+def compact_outlier_layout(doc, ratio: float = 0.02) -> int:
+    """把远离主体的离散图元簇搬到主体旁，避免整体 bounds 被撑大。
+
+    竣工图常见：主体图集中在某区域，另有一张材料表/图签被放在几十万单位之外。
+    前端 dxf-viewer 按 scene.bounds 自动 FitView，主体只占视野不到 1%，表现为
+    “打开后图纸很小，需手动放大”。这里按 X 方向最大间隙找出离散簇，整体平移
+    到主体右侧；不缩放、不旋转，主体坐标不变，图元间的相对位置保持，仅合并布局。
+    仅当离散簇占比很小（默认 2%）且间隙远大于主体宽度时才处理，避免误伤分幅图。
+
+    Returns:
+        被平移的实体数量。
+    """
+    from ezdxf import bbox
+    from ezdxf.math import Matrix44
+
+    msp = doc.modelspace()
+    try:
+        cached = bbox.Cache()
+        boxes: list[tuple] = []
+        for entity in msp:
+            try:
+                entity_bbox = bbox.extents([entity], cache=cached)
+                if entity_bbox.has_data:
+                    boxes.append((entity, entity_bbox))
+            except Exception:  # noqa: BLE001 单个实体算不出包围盒就跳过
+                continue
+    except Exception as exc:  # noqa: BLE001 bbox 不可用时静默跳过
+        logger.warning("紧凑布局跳过（包围盒计算失败）：%s", exc)
+        return 0
+
+    if len(boxes) < 20:
+        return 0
+
+    centers_x = sorted((b.extmin.x + b.extmax.x) / 2 for _, b in boxes)
+    # 找 X 方向的相对最大间隙，作为主体与离散簇的分界
+    gap, split = 0.0, -1
+    for i in range(1, len(centers_x)):
+        span = centers_x[i] - centers_x[i - 1]
+        if span > gap:
+            gap, split = span, i
+    if split <= 0 or split >= len(centers_x):
+        return 0
+
+    main_x = centers_x[split - 1]
+    outlier_x = centers_x[split]
+    main_width = main_x - centers_x[0]
+    left_count, right_count = split, len(centers_x) - split
+    minority = min(left_count, right_count)
+    # 离散簇必须占比很小，且间隙远大于主体宽度，避免把正常分幅图误判为离散
+    if minority > len(centers_x) * ratio or gap < main_width * 2:
+        return 0
+
+    if right_count <= left_count:
+        moving = [(e, b) for e, b in boxes if (b.extmin.x + b.extmax.x) / 2 >= outlier_x]
+        keep = [(e, b) for e, b in boxes if (b.extmin.x + b.extmax.x) / 2 < outlier_x]
+    else:
+        moving = [(e, b) for e, b in boxes if (b.extmin.x + b.extmax.x) / 2 <= main_x]
+        keep = [(e, b) for e, b in boxes if (b.extmin.x + b.extmax.x) / 2 > main_x]
+    if not keep or not moving:
+        return 0
+
+    keep_max_x = max(b.extmax.x for _, b in keep)
+    keep_min_x = min(b.extmin.x for _, b in keep)
+    keep_min_y = min(b.extmin.y for _, b in keep)
+    move_min_x = min(b.extmin.x for _, b in moving)
+    move_min_y = min(b.extmin.y for _, b in moving)
+
+    spacing = max(main_width * 0.05, 1.0)
+    dx = keep_max_x + spacing - move_min_x
+    dy = keep_min_y - move_min_y
+    matrix = Matrix44.translate(dx, dy, 0)
+    moved = 0
+    for entity, _ in moving:
+        try:
+            entity.transform(matrix)
+            moved += 1
+        except Exception:  # noqa: BLE001 个别实体不支持平移则保留原位
+            continue
+    return moved
+
+
 def postprocess(dxf_path: Path) -> None:
     """对 DXF 做一次后处理（一次读写完成全部步骤）。"""
     import ezdxf
@@ -197,15 +278,16 @@ def postprocess(dxf_path: Path) -> None:
     align = fix_text_align_points(doc)
     height = apply_mtext_inline_height(doc)
     tables = expand_tables(doc)
-    if not (align or height or tables):
+    compacted = compact_outlier_layout(doc)
+    if not (align or height or tables or compacted):
         return
     try:
         doc.saveas(str(dxf_path))
     except Exception as exc:  # noqa: BLE001 保存失败保留原文件即可
         logger.warning("图纸后处理保存失败 %s：%s", dxf_path.name, exc)
         return
-    logger.info("图纸后处理（对齐点补全 %d、内联字高折算 %d、表格展开 %d）：%s",
-                align, height, tables, dxf_path.name)
+    logger.info("图纸后处理（对齐点补全 %d、内联字高折算 %d、表格展开 %d、离散图元归位 %d）：%s",
+                align, height, tables, compacted, dxf_path.name)
 
 
 def _cache_ready(cached: Path, version_file: Path) -> bool:

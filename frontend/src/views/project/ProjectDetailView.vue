@@ -49,6 +49,14 @@
           :refresh-key="dataVersion"
           @changed="refreshOverview"
           @go="tab = $event"
+          @clear-highlight="highlightRow = undefined"
+        />
+      </el-tab-pane>
+      <el-tab-pane label="图纸清单" name="drawing-boq">
+        <DrawingBoqPanel
+          :project-id="numberId"
+          :refresh-key="dataVersion"
+          @go="tab = $event"
         />
       </el-tab-pane>
       <el-tab-pane :label="`疑点复核 (${overview?.issueTotal ?? 0})`" name="issues">
@@ -67,7 +75,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { checkApi, projectApi, reportApi, taskApi, type Overview, type ProjectVO } from '@/api'
@@ -75,6 +83,7 @@ import { datetime, money, statusTag } from '@/utils/format'
 import OverviewPanel from './components/OverviewPanel.vue'
 import FilePanel from './components/FilePanel.vue'
 import BoqPanel from './components/BoqPanel.vue'
+import DrawingBoqPanel from './components/DrawingBoqPanel.vue'
 import IssuePanel from './components/IssuePanel.vue'
 import ReportPanel from './components/ReportPanel.vue'
 
@@ -104,6 +113,8 @@ async function loadAll() {
     const [p, o] = await Promise.all([projectApi.get(numberId), projectApi.overview(numberId)])
     project.value = p
     overview.value = o
+    // 顶部「刷新」也要通知已挂载的工程量清单/图纸清单等 Tab 重新取数并重算匹配
+    dataVersion.value += 1
   } finally {
     loading.value = false
   }
@@ -115,6 +126,8 @@ async function refreshOverview() {
   }
   overview.value = await projectApi.overview(numberId)
   project.value = await projectApi.get(numberId)
+  // 资料上传/解析完成后，通知图纸清单等 Tab 重新加载并重算图纸-清单匹配
+  dataVersion.value += 1
 }
 
 async function startCheck() {
@@ -140,7 +153,6 @@ function pollTask(taskId: number) {
         stopPoll()
         ElMessage.success(task.message || '核查完成')
         await refreshOverview()
-        dataVersion.value += 1
         tab.value = 'issues'
       } else if (task?.status === 'FAILED') {
         stopPoll()
@@ -167,14 +179,17 @@ async function generateReport() {
   const report = await reportApi.generate(numberId)
   ElMessage.success('报告初稿已生成')
   await refreshOverview()
-  dataVersion.value += 1
   tab.value = 'report'
   return report
 }
 
 function onLocate(rowNo?: number) {
-  highlightRow.value = rowNo
+  // 先清空再设置：连续定位同一行时，值不变 watch 不会触发，滚动/闪烁就不会重来
+  highlightRow.value = undefined
   tab.value = 'boq'
+  nextTick(() => {
+    highlightRow.value = rowNo
+  })
 }
 
 /** 归档（F1 流程终点）：报告确认后归档留痕 */
@@ -193,10 +208,10 @@ onMounted(async () => {
   if (queryTab) {
     tab.value = queryTab
   }
+  // 外部链接带行号进来（如疑点导出/跳转），和疑点列表点击走同一套定位逻辑
   const row = route.query.row as string | undefined
   if (row) {
-    highlightRow.value = Number(row)
-    tab.value = 'boq'
+    onLocate(Number(row))
   }
 })
 

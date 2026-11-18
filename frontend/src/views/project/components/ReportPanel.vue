@@ -2,6 +2,12 @@
   <div>
     <div class="toolbar">
       <el-button type="primary" :loading="generating" @click="generate">生成报告初稿</el-button>
+      <el-tooltip content="开启后，生成报告时用 AI 撰写处理建议（关闭则用模板文案）" placement="bottom">
+        <div class="ai-switch">
+          <span>报告 AI</span>
+          <el-switch v-model="reportAi" size="small" :loading="aiSwitchLoading" @change="onReportAiChange" />
+        </div>
+      </el-tooltip>
       <el-button @click="load">刷新</el-button>
       <span class="hint">
         报告由确定性核查结果装配，AI 仅成文建议（不修改金额、不下结论）；确认需项目经理账号
@@ -27,7 +33,7 @@
       <el-table-column label="确认时间" width="170">
         <template #default="{ row }">{{ datetime(row.confirmTime) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="250" fixed="right">
+      <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="preview(row)">预览</el-button>
           <el-button link type="primary" :disabled="row.status !== 'DRAFT'" @click="openEdit(row)">
@@ -41,6 +47,14 @@
             @click="confirm(row)"
           >
             确认
+          </el-button>
+          <el-button
+            link
+            type="danger"
+            :disabled="row.status === 'CONFIRMED'"
+            @click="remove(row)"
+          >
+            删除
           </el-button>
         </template>
       </el-table-column>
@@ -109,8 +123,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { reportApi, type ReportContent, type ReportSection, type ReportVO } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { reportApi, settingsApi, type ReportContent, type ReportSection, type ReportVO } from '@/api'
 import { datetime, statusTag } from '@/utils/format'
 import { reportTextLines } from '@/utils/report'
 import { useAppStore } from '@/stores/app'
@@ -129,6 +143,8 @@ const editVisible = ref(false)
 const current = ref<ReportVO>()
 const editTitle = ref('')
 const editTexts = ref<{ title: string; text: string; index: number }[]>([])
+const reportAi = ref(false)
+const aiSwitchLoading = ref(false)
 
 const sections = computed<ReportSection[]>(() => parseContent(current.value?.content))
 
@@ -221,11 +237,54 @@ async function confirm(row: ReportVO) {
   emit('changed')
 }
 
+async function remove(row: ReportVO) {
+  try {
+    await ElMessageBox.confirm(`确定删除报告「${row.title}」（V${row.version}）吗？此操作不可恢复。`, '删除报告', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  await reportApi.remove(row.id)
+  ElMessage.success('报告已删除')
+  await load()
+  emit('changed')
+}
+
 function exportWord(row: ReportVO) {
   reportApi.exportWord(row.id, row.title)
 }
 
-onMounted(load)
+async function loadSettings() {
+  try {
+    reportAi.value = (await settingsApi.get()).reportAiEnabled
+  } catch {
+    // 读取失败保持默认关闭
+  }
+}
+
+async function onReportAiChange() {
+  aiSwitchLoading.value = true
+  try {
+    const settings = await settingsApi.get()
+    const updated = await settingsApi.update({
+      llmAttributionEnabled: settings.llmAttributionEnabled,
+      reportAiEnabled: reportAi.value,
+    })
+    reportAi.value = updated.reportAiEnabled
+    ElMessage.success(reportAi.value ? '已开启报告 AI' : '已关闭报告 AI')
+  } catch {
+    reportAi.value = !reportAi.value
+    ElMessage.error('报告 AI 设置失败')
+  } finally {
+    aiSwitchLoading.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  loadSettings()
+})
 watch(() => props.refreshKey, () => load())
 </script>
 
@@ -240,6 +299,13 @@ watch(() => props.refreshKey, () => load())
 .hint {
   color: #909399;
   font-size: 12px;
+}
+.ai-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #606266;
 }
 .report-body {
   max-height: 70vh;

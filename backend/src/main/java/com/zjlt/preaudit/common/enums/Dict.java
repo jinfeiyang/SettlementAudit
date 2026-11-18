@@ -110,12 +110,21 @@ public final class Dict {
     public static final String BOQ_MATERIAL = "MATERIAL";
     public static final String BOQ_SUPPLY_MATERIAL = "SUPPLY_MATERIAL";
     public static final String BOQ_SUPPLY_EQUIPMENT = "SUPPLY_EQUIPMENT";
+    /** 清单导入时按取费规则生成的费用行（不参与定额匹配与取费核查，避免重复计费） */
+    public static final String BOQ_FEE = "FEE";
+    /** 表七光缆敷设施工基准价：按光缆芯数聚合，固定单价法计价 */
+    public static final String BOQ_FIXED = "FIXED";
+    /** 表五工程建设其他费（安全生产费等） */
+    public static final String BOQ_OTHER = "OTHER";
 
     private static final Map<String, String> BOQ_ITEM_TYPE = Map.of(
             BOQ_QUOTA, "工程量",
             BOQ_MATERIAL, "乙供材料",
             BOQ_SUPPLY_MATERIAL, "甲供材料",
-            BOQ_SUPPLY_EQUIPMENT, "甲供设备");
+            BOQ_SUPPLY_EQUIPMENT, "甲供设备",
+            BOQ_FEE, "取费",
+            BOQ_FIXED, "固定单价",
+            BOQ_OTHER, "其他费");
 
     /** 一期主链路状态流转（允许回退，便于重复核查） */
     private static final Map<String, List<String>> TRANSITIONS = Map.of(
@@ -156,6 +165,24 @@ public final class Dict {
 
     public static String boqItemType(String code) {
         return label(BOQ_ITEM_TYPE, code);
+    }
+
+    /** 导入时按表七固定单价法重算过的行标记：其金额是施工费，不是器材费 */
+    public static final String FIXED_PRICE_TAG = "固定单价法施工费";
+
+    /** 已计价/规则生成的行：取费、固定单价、其他费不参与定额匹配与取费基数核算 */
+    public static boolean isPricedExtra(String itemType) {
+        return BOQ_FEE.equals(itemType) || BOQ_FIXED.equals(itemType) || BOQ_OTHER.equals(itemType);
+    }
+
+    /**
+     * 纯甲供器材费行：表八里未经固定单价法重算的甲供材料/设备。
+     * 这类物资由建设单位提供，决算送审金额不含，因此不计入结算合计与取费基数；
+     * 经固定单价法重算的光缆行金额已是施工费，不属于此列。
+     */
+    public static boolean isPureSupplyMaterial(String itemType, String featureDesc) {
+        boolean supply = BOQ_SUPPLY_MATERIAL.equals(itemType) || BOQ_SUPPLY_EQUIPMENT.equals(itemType);
+        return supply && (featureDesc == null || !featureDesc.contains(FIXED_PRICE_TAG));
     }
 
     public static boolean canTransit(String from, String to) {

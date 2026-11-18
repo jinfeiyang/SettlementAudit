@@ -7,6 +7,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -54,6 +55,13 @@ public class ReportController {
     @PostMapping("/reports/{id}/confirm")
     public R<ReportDtos.ReportVO> confirm(@PathVariable Long id) {
         return R.ok(reportService.confirm(id));
+    }
+
+    @Operation(summary = "删除报告（已确认的不可删）")
+    @DeleteMapping("/reports/{id}")
+    public R<Void> delete(@PathVariable Long id) {
+        reportService.delete(id);
+        return R.ok();
     }
 
     @Operation(summary = "导出 Word")

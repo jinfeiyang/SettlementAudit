@@ -20,8 +20,8 @@
     </template>
 
     <el-table v-loading="loading" :data="reports" empty-text="暂无报告，可在项目作业页生成初稿">
-      <el-table-column prop="projectName" label="项目" width="220" show-overflow-tooltip />
-      <el-table-column prop="title" label="报告标题" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="projectName" label="项目" min-width="300" class-name="wrap-cell" />
+      <el-table-column prop="title" label="报告标题" min-width="300" class-name="wrap-cell" />
       <el-table-column label="版本" width="80" align="center">
         <template #default="{ row }">V{{ row.version }}</template>
       </el-table-column>
@@ -36,7 +36,7 @@
       <el-table-column label="生成时间" width="170">
         <template #default="{ row }">{{ datetime(row.createTime) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="preview(row)">预览</el-button>
           <el-button link type="primary" @click="exportWord(row)">导出 Word</el-button>
@@ -47,6 +47,14 @@
             @click="confirm(row)"
           >
             确认
+          </el-button>
+          <el-button
+            link
+            type="danger"
+            :disabled="row.status === 'CONFIRMED'"
+            @click="remove(row)"
+          >
+            删除
           </el-button>
         </template>
       </el-table-column>
@@ -75,8 +83,8 @@
                 :key="colIndex"
                 :prop="`c${colIndex}`"
                 :label="col"
-                min-width="110"
-                show-overflow-tooltip
+                min-width="120"
+                class-name="wrap-cell"
               />
             </el-table>
             <template v-else>
@@ -98,7 +106,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, reportApi, type ProjectVO, type ReportContent, type ReportSection, type ReportVO } from '@/api'
 import { datetime, statusTag } from '@/utils/format'
 import { reportTextLines } from '@/utils/report'
@@ -155,6 +163,21 @@ async function confirm(row: ReportVO) {
   await load()
 }
 
+async function remove(row: ReportVO) {
+  try {
+    await ElMessageBox.confirm(`确定删除报告「${row.title}」（V${row.version}）吗？此操作不可恢复。`, '删除报告', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  await reportApi.remove(row.id)
+  ElMessage.success('报告已删除')
+  await load()
+}
+
 function exportWord(row: ReportVO) {
   reportApi.exportWord(row.id, row.title)
 }
@@ -174,6 +197,7 @@ onMounted(async () => {
 }
 .right {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 .report-title {
@@ -210,5 +234,12 @@ h3 {
 .text-list {
   padding-left: 1.6em;
   text-indent: -1.6em;
+}
+/* 项目名与报告标题偏长，省略号截断后看不全，改为换行完整展示 */
+:deep(.wrap-cell .cell) {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.45;
+  padding: 4px 8px;
 }
 </style>

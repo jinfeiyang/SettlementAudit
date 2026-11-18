@@ -52,6 +52,13 @@ public class FeeCheckService {
         int quotaRows = 0;
         int coveredRows = 0;
         for (BoqItem item : items) {
+            // 固定单价/其他费/取费行是已计价结果，不进入直接费与取费基数，避免重复取费。
+            // 光缆行在导入时已按表七固定单价法重算（特征标注“固定单价法施工费”），同为最终价，不再取费。
+            if (Dict.isPricedExtra(item.getItemType())
+                    || (item.getFeatureDesc() != null && item.getFeatureDesc().contains(Dict.FIXED_PRICE_TAG))
+                    || Dict.isPureSupplyMaterial(item.getItemType(), item.getFeatureDesc())) {
+                continue;
+            }
             boolean quotaRow = item.getItemType() == null || Dict.BOQ_QUOTA.equals(item.getItemType());
             BigDecimal amount = amount(item);
             boolean covered = false;
@@ -74,7 +81,12 @@ public class FeeCheckService {
             }
             RuleQuota quota = item.getMatchQuotaCode() == null ? null
                     : quotaByCode.get(TextUtil.normalize(item.getMatchQuotaCode()));
-            if (quota != null && quota.getLaborPrice() != null && item.getQuantity() != null) {
+            // 表三甲折算行（featureDesc 含“合计工日”）的合价已按技工/普工工日×折后单价算好，
+            // 本身就是人工费，直接作为“人工费×费率”的基数；其余行仍按定额技工工日×数量估算。
+            if (item.getFeatureDesc() != null && item.getFeatureDesc().contains("合计工日")
+                    && item.getTotalPrice() != null) {
+                labor = labor.add(item.getTotalPrice());
+            } else if (quota != null && quota.getLaborPrice() != null && item.getQuantity() != null) {
                 BigDecimal factor = TextUtil.unitFactor(item.getUnit(), quota.getUnit());
                 if (factor == null) {
                     factor = BigDecimal.ONE;

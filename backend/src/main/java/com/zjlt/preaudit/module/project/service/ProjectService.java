@@ -134,8 +134,12 @@ public class ProjectService {
         Project project = requireProject(id);
         int fileCount = count(projectFileMapper.selectCount(
                 Wrappers.<ProjectFile>lambdaQuery().eq(ProjectFile::getProjectId, id)));
+        // 取费行是导入时按规则生成的计算结果，清单页不逐行展示，条数也不计入清单行数，
+        // 否则页签写着 42 条、表格里只有 25 行
         int boqCount = count(boqItemMapper.selectCount(
-                Wrappers.<BoqItem>lambdaQuery().eq(BoqItem::getProjectId, id)));
+                Wrappers.<BoqItem>lambdaQuery()
+                        .eq(BoqItem::getProjectId, id)
+                        .ne(BoqItem::getItemType, Dict.BOQ_FEE)));
         int high = issueCount(id, Dict.LEVEL_HIGH, null);
         int medium = issueCount(id, Dict.LEVEL_MEDIUM, null);
         int low = issueCount(id, Dict.LEVEL_LOW, null);

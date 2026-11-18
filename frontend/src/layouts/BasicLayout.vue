@@ -21,7 +21,12 @@
       <el-header class="header">
         <span class="title">通信工程造价结算 AI 预审分析工具</span>
         <div class="right">
-          <span class="env">一期试用版 · 模块化单体</span>
+          <el-tooltip content="开启后，核查时用 AI 为疑点生成归因说明（不影响判定与金额）" placement="bottom">
+            <div class="ai-switch">
+              <span>AI 归因</span>
+              <el-switch v-model="aiAttribution" size="small" :loading="aiSwitchLoading" @change="onAttributionChange" />
+            </div>
+          </el-tooltip>
           <el-tag v-if="store.user" size="small" effect="plain">{{ store.user.roleName }}</el-tag>
           <el-dropdown @command="onCommand">
             <span class="user">
@@ -44,10 +49,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { useMenus } from '@/composables/useMenus'
 import { useAppStore } from '@/stores/app'
+import { settingsApi } from '@/api'
 import {
   ArrowDown,
   Collection,
@@ -93,6 +100,39 @@ function onCommand(command: string) {
     router.push('/login')
   }
 }
+
+const aiAttribution = ref(false)
+const aiSwitchLoading = ref(false)
+// 报告 AI 开关已移到报告页，这里仅保留其值以免切换归因开关时覆盖对方状态
+const reportAiEnabled = ref(false)
+
+onMounted(async () => {
+  try {
+    const settings = await settingsApi.get()
+    aiAttribution.value = settings.llmAttributionEnabled
+    reportAiEnabled.value = settings.reportAiEnabled
+  } catch {
+    // 设置读取失败时保持默认关闭，不阻断页面
+  }
+})
+
+async function onAttributionChange() {
+  aiSwitchLoading.value = true
+  try {
+    const settings = await settingsApi.update({
+      llmAttributionEnabled: aiAttribution.value,
+      reportAiEnabled: reportAiEnabled.value,
+    })
+    aiAttribution.value = settings.llmAttributionEnabled
+    reportAiEnabled.value = settings.reportAiEnabled
+    ElMessage.success(aiAttribution.value ? '已开启 AI 归因' : '已关闭 AI 归因')
+  } catch {
+    aiAttribution.value = !aiAttribution.value
+    ElMessage.error('AI 设置失败')
+  } finally {
+    aiSwitchLoading.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -125,10 +165,6 @@ function onCommand(command: string) {
   align-items: center;
   gap: 12px;
 }
-.env {
-  font-size: 12px;
-  color: #909399;
-}
 .user {
   display: flex;
   align-items: center;
@@ -136,5 +172,13 @@ function onCommand(command: string) {
   font-size: 14px;
   color: #303133;
   cursor: pointer;
+}
+.ai-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #606266;
+  cursor: default;
 }
 </style>
