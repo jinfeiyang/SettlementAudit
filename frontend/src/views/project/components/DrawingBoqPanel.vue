@@ -23,6 +23,11 @@
         <template #default="{ row }">{{ qty(row.quantity) }}</template>
       </el-table-column>
       <el-table-column prop="unit" label="单位" width="200" align="center" />
+      <el-table-column label="所在图页" width="180" align="center" class-name="wrap-cell">
+        <template #default="{ row }">
+          <DrawingJump :sources="row.sources" :fallback="fallbackOf(row)" show-title />
+        </template>
+      </el-table-column>
       <el-table-column label="匹配清单" min-width="220" align="center" class-name="wrap-cell">
         <template #default="{ row }">
           <template v-if="row.match">
@@ -56,10 +61,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { boqApi, projectApi, type BoqItemVO, type FileVO } from '@/api'
+import DrawingJump from './DrawingJump.vue'
 import {
   compareDrawingWithBoq,
   mergeDrawingMaterials,
+  type DrawingFrameItem,
   type DrawingMaterial,
+  type DrawingMaterialItem,
+  type DrawingTableItem,
 } from './drawingCompare'
 
 /** refreshKey 由父组件在核查完成后自增，Tab 已挂载时也能重新拉取图纸与清单匹配 */
@@ -70,6 +79,8 @@ const all = ref<BoqItemVO[]>([])
 const drawingMaterials = ref<DrawingMaterial[]>([])
 const drawingLoading = ref(false)
 const unmatchedOnly = ref(false)
+/** 图纸文件名 → 文件 id：旧解析结果没有图框信息时，至少能按文件名打开整张图 */
+const fileIdsByName = ref<Record<string, number>>({})
 
 const comparisons = computed(() => compareDrawingWithBoq(drawingMaterials.value, all.value))
 
@@ -99,17 +110,21 @@ async function loadDrawings() {
     const drawings = files.filter(
       (file) => (file.fileType === 'DXF' || file.fileType === 'DWG') && file.parseStatus === 'SUCCESS',
     )
+    fileIdsByName.value = Object.fromEntries(drawings.map((file) => [file.fileName, file.id]))
     const results = await Promise.all(
       drawings.map(async (file) => {
         try {
           const data = await projectApi.parseResult(file.id)
           return {
+            fileId: file.id,
             fileName: file.fileName,
-            summary: data?.materialSummary as any[] | undefined,
-            measure: (data?.measure ?? null) as Record<string, any> | null,
+            summary: data?.materialSummary as DrawingMaterialItem[] | undefined,
+            // 材料明细带图框号，图框带张号/图名/坐标：两者一起才能标出「这条材料画在哪一页」
+            tables: (data?.materials ?? []) as DrawingTableItem[],
+            frames: (data?.frames ?? []) as DrawingFrameItem[],
           }
         } catch {
-          return { fileName: file.fileName, measure: null }
+          return { fileId: file.id, fileName: file.fileName }
         }
       }),
     )
@@ -117,6 +132,13 @@ async function loadDrawings() {
   } finally {
     drawingLoading.value = false
   }
+}
+
+/** 旧解析结果（没有图页信息）时按文件名找回图纸，至少能打开整张图 */
+function fallbackOf(row: DrawingMaterial) {
+  const fileName = row.files[0]
+  const fileId = fileName ? fileIdsByName.value[fileName] : undefined
+  return fileId ? { fileId, fileName } : null
 }
 
 function refreshAll() {

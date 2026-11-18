@@ -683,6 +683,8 @@ def _text_tables(entries) -> list[dict[str, Any]]:
             left, right = centers[0] - tol, centers[-1] + tol
 
             body: list[list[str]] = []
+            # 收表区域的文字坐标：图纸没画图框时，前端只能靠它定位到这张表所在的页面
+            used: list[tuple[float, float]] = [(x, y) for x, y, _ in cluster]
             pitches: list[float] = []
             prev_y = cluster[0][1]
             for j in range(start + 1, len(rows)):
@@ -713,6 +715,7 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                 if filled == 1 and not values[0]:
                     continue
                 body.append(values)
+                used.extend((x, y) for x, y, _ in cells)
                 if gap > 1e-6:
                     pitches.append(gap)
                 prev_y = y
@@ -728,8 +731,25 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                 "columns": columns,
                 "rows": body,
                 "pos": (cluster[0][0], cluster[0][1]),
+                "box": _text_box(used, heights),
             })
     return tables
+
+
+def _text_box(points, heights) -> dict[str, float]:
+    """按文字插入点估算表格外框（图纸坐标）。
+
+    TEXT 的插入点是左边缘、基线，不是字的外接框：横向要往右多留几个字高
+    （最长的材料名称可能十几字），纵向留一个字高。只用它做「跳到这一页」的
+    视野中心，不需要精确到框线。
+    """
+    if not points:
+        return {}
+    pad = max(heights) if heights else 2.0
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return {"minX": round(min(xs) - pad, 3), "minY": round(min(ys) - pad, 3),
+            "maxX": round(max(xs) + pad * 6, 3), "maxY": round(max(ys) + pad * 2, 3)}
 
 
 def _build_table(block) -> dict[str, Any] | None:
@@ -1033,12 +1053,12 @@ def _tables_from_blocks(doc) -> list[dict[str, Any]]:
     for entity in doc.modelspace():
         etype = entity.dxftype()
         if etype == "INSERT" and _TABLE_BLOCK_RE.match(entity.dxf.name):
-            refs.setdefault(entity.dxf.name, []).append(entity.dxf.insert)
+            refs.setdefault(entity.dxf.name, []).append(entity)
         elif etype == "ACAD_TABLE":
             # 没走过后处理（未展开 ACAD_TABLE）的图纸也要能定位：几何块名在组码 340
             block_name = entity.dxf.get("geometry")
             if block_name:
-                refs.setdefault(block_name, []).append(entity.dxf.insert)
+                refs.setdefault(block_name, []).append(entity)
 
     tables: list[dict[str, Any]] = []
     for block in doc.blocks:
@@ -1047,19 +1067,34 @@ def _tables_from_blocks(doc) -> list[dict[str, Any]]:
         table = _build_table(block)
         if not table:
             continue
-        points = refs.get(block.name) or []
-        if not points:
+        refs_of_block = refs.get(block.name) or []
+        if not refs_of_block:
             table["pos"] = None
             tables.append(table)
             continue
         # 同一个表格块可能被多处引用（分幅复制、整表复制），每个引用位置各出一张表：
         # 只取第一个位置的话，后面的表会全被算到同一张图上，图幅归属和编号都错
-        for point in points:
+        for entity in refs_of_block:
             item = dict(table)
             item["rows"] = [list(row) for row in table["rows"]]  # 各表行数据互不共享
-            item["pos"] = (point.x, point.y)
+            item["pos"] = (entity.dxf.insert.x, entity.dxf.insert.y)
+            item["box"] = _insert_box(entity)
             tables.append(item)
     return tables
+
+
+def _insert_box(entity) -> dict[str, float]:
+    """块引用在模型空间里的包围盒：块内坐标是定义坐标，不能直接拿来定位。"""
+    from ezdxf import bbox
+
+    try:
+        extents = bbox.extents([entity])
+    except Exception:  # noqa: BLE001 ACAD_TABLE 等特殊实体算不出范围时退化为只按插入点定位
+        return {}
+    if not extents.has_data:
+        return {}
+    return {"minX": round(extents.extmin.x, 3), "minY": round(extents.extmin.y, 3),
+            "maxX": round(extents.extmax.x, 3), "maxY": round(extents.extmax.y, 3)}
 
 
 def _tables_from_text(doc) -> list[dict[str, Any]]:
@@ -1367,6 +1402,13 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
             "deviceBlocks": device_blocks,
             "layers": dict(sorted(layer_counts.items(), key=lambda kv: kv[1], reverse=True)[:50]),
         },
+        # 图框清单：材料表用 frame（图框号）标来源，前端要按号找到这张图的张号/图名
+        # 和图框范围，才能从材料行跳到那一页图纸上去看
+        "frames": [{"no": frame["no"], "sheet": frame.get("sheet"),
+                    "title": frame.get("title"),
+                    "minX": round(frame["minX"], 3), "minY": round(frame["minY"], 3),
+                    "maxX": round(frame["maxX"], 3), "maxY": round(frame["maxY"], 3)}
+                   for frame in frames[:200]],
         "materials": materials,
         "materialSummary": material_summary,
         "projectInfo": project_info,

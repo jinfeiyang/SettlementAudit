@@ -71,7 +71,7 @@
         <el-table-column label="来源表" width="120">
           <template #default="{ row }">{{ row.sourceSheet || '-' }}</template>
         </el-table-column>
-        <el-table-column label="图纸匹配" width="230">
+        <el-table-column label="图纸匹配" width="250">
           <template #default="{ row }">
             <span v-if="isPricedExtraRow(row)" class="muted">-</span>
             <template v-else-if="row.drawing">
@@ -92,6 +92,7 @@
                   {{ diffLabel(row.drawing.diffRate) }}
                 </span>
               </div>
+              <DrawingJump :sources="row.drawing.sources" :fallback="fallbackOf(row.drawing)" />
             </template>
             <span v-else-if="!drawingMaterials.length" class="muted">图纸清单为空</span>
             <template v-else>
@@ -165,6 +166,13 @@
               {{ diffLabel(detailRow.drawing.diffRate) }}
             </span>
             <span v-else class="muted">单位不可换算，无法比较数量</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="图纸位置" :span="2">
+            <DrawingJump
+              :sources="detailRow.drawing.sources"
+              :fallback="fallbackOf(detailRow.drawing)"
+              show-title
+            />
           </el-descriptions-item>
         </el-descriptions>
         <el-empty v-else description="图纸材料表中没有找到对应项" :image-size="56" />
@@ -254,11 +262,14 @@ import {
 import {
   compareDrawingWithBoq,
   mergeDrawingMaterials,
+  type DrawingFrameItem,
   type DrawingMaterial,
   type DrawingMaterialItem,
   type DrawingRow,
+  type DrawingTableItem,
   type NearestMatch,
 } from './drawingCompare'
+import DrawingJump from './DrawingJump.vue'
 
 interface BoqRow extends BoqItemVO {
   /** 与清单行最贴近的图纸材料（无匹配时为 undefined） */
@@ -292,6 +303,8 @@ const drawingMaterials = ref<DrawingMaterial[]>([])
 const drawingCableFiles = ref<{ fileName: string; cable: DrawingCable }[]>([])
 const drawingLoading = ref(false)
 const drawingUnmatchedOnly = ref(false)
+/** 图纸文件名 → 文件 id：旧解析结果没有图页信息时，按文件名兜底打开整张图 */
+const drawingFileIds = ref<Record<string, number>>({})
 
 /** 清单行详情：页面太挤，图纸匹配与光缆长度核查都收到详情弹窗里看 */
 const detailVisible = ref(false)
@@ -413,17 +426,21 @@ async function loadDrawings() {
     const drawings = files.filter(
       (file) => (file.fileType === 'DXF' || file.fileType === 'DWG') && file.parseStatus === 'SUCCESS',
     )
+    drawingFileIds.value = Object.fromEntries(drawings.map((file) => [file.fileName, file.id]))
     const results = await Promise.all(
       drawings.map(async (file) => {
         try {
           const data = await projectApi.parseResult(file.id)
           return {
+            fileId: file.id,
             fileName: file.fileName,
             summary: data?.materialSummary as DrawingMaterialItem[] | undefined,
+            tables: (data?.materials ?? []) as DrawingTableItem[],
+            frames: (data?.frames ?? []) as DrawingFrameItem[],
             measure: (data?.measure ?? null) as Record<string, any> | null,
           }
         } catch {
-          return { fileName: file.fileName, measure: null }
+          return { fileId: file.id, fileName: file.fileName, measure: null }
         }
       }),
     )
@@ -436,6 +453,13 @@ async function loadDrawings() {
   } finally {
     drawingLoading.value = false
   }
+}
+
+/** 旧解析结果没有图页信息时，按文件名找回图纸，至少能打开整张图 */
+function fallbackOf(drawing: DrawingRow) {
+  const fileName = drawing.files[0]
+  const fileId = fileName ? drawingFileIds.value[fileName] : undefined
+  return fileId ? { fileId, fileName } : null
 }
 
 async function refreshAll() {

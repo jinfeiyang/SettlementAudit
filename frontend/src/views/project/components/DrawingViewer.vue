@@ -42,7 +42,12 @@ import * as THREE from 'three'
 import { DxfViewer, type LayerInfo } from 'dxf-viewer'
 import { projectApi } from '@/api'
 
-const props = defineProps<{ fileId: number; fileName: string }>()
+const props = defineProps<{
+  fileId: number
+  fileName: string
+  /** 只显示某一页：传该图框的坐标范围，加载完直接定位过去 */
+  focus?: { minX: number; minY: number; maxX: number; maxY: number } | null
+}>()
 
 /** 超过该体积不再下发前端渲染，改用服务端 SVG 快照，避免浏览器卡死 */
 const SNAPSHOT_LIMIT = 30 * 1024 * 1024
@@ -113,6 +118,7 @@ async function init() {
     await viewer.Load({ url: dxfUrl, fonts: [FONT_URL] })
     viewerReady.value = true
     layers.value = [...viewer.GetLayers(false)]
+    focusPage()
   } catch (e: any) {
     await loadSnapshot(`交互式渲染失败，已切换为快照预览${e?.message ? '：' + e.message : ''}`)
   } finally {
@@ -121,7 +127,7 @@ async function init() {
 }
 
 async function loadSnapshot(reason: string) {
-  message.value = reason
+  message.value = props.focus ? `${reason}（快照模式只显示整图，无法定位到单页）` : reason
   mode.value = 'svg'
   destroyViewer()
   const blob = await projectApi.drawing(props.fileId, 'svg')
@@ -145,6 +151,29 @@ function fitView() {
   const ox = origin?.x ?? 0
   const oy = origin?.y ?? 0
   viewer?.FitView(bounds.minX - ox, bounds.maxX - ox, bounds.minY - oy, bounds.maxY - oy, 0.05)
+}
+
+/**
+ * 定位到指定图框（材料行点进来时看的那一页）。
+ * FitView 要的是场景坐标（原始坐标减 origin），坐标不换算会偏到图纸外。
+ */
+function focusPage() {
+  const box = props.focus
+  const target = viewer
+  if (!box || !target) {
+    return
+  }
+  const origin = target.GetOrigin()
+  const ox = origin?.x ?? 0
+  const oy = origin?.y ?? 0
+  // Load 返回时画布尺寸与 OrbitControls 还没落定：等两帧再定位，并主动重绘一次
+  // （这个查看器是事件驱动渲染，只改相机不一定触发重绘）
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      target.FitView(box.minX - ox, box.maxX - ox, box.minY - oy, box.maxY - oy, 0.06)
+      target.Render()
+    })
+  })
 }
 
 function applyLayers() {
