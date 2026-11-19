@@ -77,27 +77,32 @@ async function submit() {
 <style scoped>
 .login-page {
   height: 100%;
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 80px;
+  gap: 88px;
   background: linear-gradient(135deg, #001529 0%, #0b3a6b 55%, #1f6feb 100%);
   color: #fff;
 }
 .brand h1 {
-  font-size: 34px;
-  margin: 0 0 8px;
-  letter-spacing: 2px;
+  font-size: 40px;
+  line-height: 1.3;
+  margin: 0 0 10px;
+  letter-spacing: 1px;
 }
 .brand h2 {
-  font-size: 22px;
-  margin: 0 0 18px;
+  font-size: 20px;
+  margin: 0 0 20px;
   font-weight: 400;
+  letter-spacing: 3px;
   color: #9fc3ff;
 }
 .brand p {
-  color: #b9cbe4;
-  letter-spacing: 1px;
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: rgba(255, 255, 255, 0.6);
 }
 .login-card {
   width: 380px;
