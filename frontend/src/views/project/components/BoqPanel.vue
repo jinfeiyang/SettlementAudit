@@ -44,7 +44,7 @@
         :data="pageRows"
         :row-class-name="rowClass"
         empty-text="暂无清单数据，请先在「资料与解析」上传清单 Excel"
-        max-height="520"
+        :height="tableHeight"
       >
         <el-table-column label="类别" width="96">
           <template #default="{ row }">
@@ -92,7 +92,12 @@
                   {{ diffLabel(row.drawing.diffRate) }}
                 </span>
               </div>
-              <DrawingJump :sources="row.drawing.sources" :fallback="fallbackOf(row.drawing)" />
+              <DrawingJump
+                :sources="row.drawing.sources"
+                :fallback="fallbackOf(row.drawing)"
+                :material="row.drawing.name"
+                :spec="row.drawing.spec"
+              />
             </template>
             <span v-else-if="!drawingMaterials.length" class="muted">图纸清单为空</span>
             <template v-else>
@@ -171,6 +176,8 @@
             <DrawingJump
               :sources="detailRow.drawing.sources"
               :fallback="fallbackOf(detailRow.drawing)"
+              :material="detailRow.drawing.name"
+              :spec="detailRow.drawing.spec"
               show-title
             />
           </el-descriptions-item>
@@ -252,6 +259,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { boqApi, projectApi, type BoqItemVO, type FileVO } from '@/api'
 import { money } from '@/utils/format'
+import { useTableHeight } from '@/utils/useTableHeight'
 import {
   cableCategory,
   cableSourceText,
@@ -287,6 +295,8 @@ const emit = defineEmits<{
 }>()
 
 const tableRef = ref<TableInstance>()
+/** 表格高度跟随窗口变化，避免固定高度在大屏留白、小屏双重滚动 */
+const tableHeight = useTableHeight(tableRef)
 /** 当前定位到的清单行，用于提示条展示名称（找不到时说明行已不存在） */
 const locatedRow = ref<BoqItemVO>()
 const all = ref<BoqItemVO[]>([])

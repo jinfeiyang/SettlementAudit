@@ -73,8 +73,10 @@
       :current-page="query.page"
       :page-size="query.size"
       :total="total"
-      layout="total, prev, pager, next, jumper"
+      layout="total, sizes, prev, pager, next, jumper"
+      :page-sizes="[10, 20, 50]"
       @current-change="onPageChange"
+      @size-change="onSizeChange"
     />
 
     <el-drawer v-model="detailVisible" :title="current?.title || '疑点详情'" size="46%">
@@ -170,6 +172,12 @@ async function reload() {
 
 function onPageChange(page: number) {
   query.page = page
+  reload()
+}
+
+function onSizeChange(size: number) {
+  query.size = size
+  query.page = 1
   reload()
 }
 

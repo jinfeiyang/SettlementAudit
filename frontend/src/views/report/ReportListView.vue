@@ -10,7 +10,7 @@
             clearable
             filterable
             style="width: 240px"
-            @change="load"
+            @change="onProjectChange"
           >
             <el-option v-for="p in projects" :key="p.id" :label="p.projectName" :value="p.id" />
           </el-select>
@@ -19,7 +19,7 @@
       </div>
     </template>
 
-    <el-table v-loading="loading" :data="reports" empty-text="暂无报告，可在项目作业页生成初稿">
+    <el-table v-loading="loading" :data="pagedReports" empty-text="暂无报告，可在项目作业页生成初稿">
       <el-table-column prop="projectName" label="项目" min-width="300" class-name="wrap-cell" />
       <el-table-column prop="title" label="报告标题" min-width="300" class-name="wrap-cell" />
       <el-table-column label="版本" width="80" align="center">
@@ -59,6 +59,17 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      class="pager"
+      :current-page="page"
+      :page-size="size"
+      :total="reports.length"
+      layout="total, sizes, prev, pager, next, jumper"
+      :page-sizes="[10, 20, 50]"
+      @current-change="(p: number) => (page = p)"
+      @size-change="onSizeChange"
+    />
 
     <el-dialog
       v-model="previewVisible"
@@ -105,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, reportApi, type ProjectVO, type ReportContent, type ReportSection, type ReportVO } from '@/api'
 import { datetime, statusTag } from '@/utils/format'
@@ -120,14 +131,32 @@ const loading = ref(false)
 const previewVisible = ref(false)
 const current = ref<ReportVO>()
 const sections = ref<ReportSection[]>([])
+const page = ref(1)
+const size = ref(20)
+
+const pagedReports = computed(() =>
+  reports.value.slice((page.value - 1) * size.value, page.value * size.value),
+)
 
 async function load() {
   loading.value = true
   try {
     reports.value = await reportApi.list(projectId.value)
+    // 删除或筛选后当前页可能越界，回落最后一页
+    page.value = Math.min(page.value, Math.max(1, Math.ceil(reports.value.length / size.value)))
   } finally {
     loading.value = false
   }
+}
+
+function onProjectChange() {
+  page.value = 1
+  load()
+}
+
+function onSizeChange(value: number) {
+  size.value = value
+  page.value = 1
 }
 
 function preview(row: ReportVO) {
@@ -199,6 +228,10 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.pager {
+  margin-top: 16px;
+  justify-content: flex-end;
 }
 .report-title {
   text-align: center;

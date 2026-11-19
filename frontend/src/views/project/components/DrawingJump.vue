@@ -30,25 +30,52 @@
 
     <el-dialog
       v-model="visible"
-      :title="`图纸预览 - ${file?.fileName || ''}`"
+      :title="`图纸预览 - ${file?.fileName || ''}${currentLabel ? ' · ' + currentLabel : ''}`"
       width="80%"
       top="5vh"
       destroy-on-close
       append-to-body
     >
+      <div v-if="current || material || relatedSources.length > 1" class="preview-bar">
+        <div v-if="current || material" class="preview-head">
+          <div v-if="current" class="head-title">
+            {{ sourceLabel(current) }}<template v-if="current.title"> · {{ current.title }}</template>
+          </div>
+          <!-- 对应的具体材料名称标红：如「通信光缆」 -->
+          <div v-if="material" class="current-material">
+            材料：{{ material }}<span v-if="spec" class="material-spec"> {{ spec }}</span>
+          </div>
+        </div>
+        <div v-if="relatedSources.length > 1" class="related-line">
+          <span class="related-label">关联图纸（共 {{ relatedSources.length }} 页）</span>
+          <el-button
+            v-for="src in relatedSources"
+            :key="`${src.fileId}-${src.frame}`"
+            size="small"
+            :type="isCurrent(src) ? 'danger' : 'default'"
+            :plain="isCurrent(src)"
+            :title="src.title || src.fileName"
+            @click="open(src)"
+          >
+            {{ sourceLabel(src) }}
+          </el-button>
+        </div>
+      </div>
       <DrawingViewer
         v-if="file"
-        :key="`${file.id}-${focus?.minX ?? ''}-${focus?.minY ?? ''}`"
+        :key="file.id"
         :file-id="file.id"
         :file-name="file.fileName"
         :focus="focus"
+        :highlight="material"
+        :highlight-spec="spec"
       />
     </el-dialog>
   </span>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import DrawingViewer from './DrawingViewer.vue'
 import { focusBoundsOf, type Bounds, type DrawingSource } from './drawingCompare'
 
@@ -64,13 +91,30 @@ const props = withDefaults(
     fallback?: { fileId: number; fileName: string } | null
     /** 是否在图页下方再显示图名 */
     showTitle?: boolean
+    /** 当前查看的具体材料名称（如「通信光缆」），在预览顶部标红 */
+    material?: string
+    /** 材料规格，跟在名称后面一起展示 */
+    spec?: string
   }>(),
-  { sources: () => [], fallback: null, showTitle: false },
+  { sources: () => [], fallback: null, showTitle: false, material: '', spec: '' },
 )
 
 const visible = ref(false)
 const file = ref<{ id: number; fileName: string } | null>(null)
 const focus = ref<Bounds | null>(null)
+/** 当前定位的关联页，用于预览顶部高亮与标题 */
+const current = ref<DrawingSource | null>(null)
+
+/** 这条材料/清单项出现的所有图页，预览顶部可直接切换定位 */
+const relatedSources = computed(() => props.sources)
+
+const currentLabel = computed(() =>
+  current.value ? sourceLabel(current.value) : file.value && !props.sources.length ? '整张图' : '',
+)
+
+function isCurrent(source: DrawingSource) {
+  return current.value?.fileId === source.fileId && current.value?.frame === source.frame
+}
 
 /** 张号优先（图签上印的才对得上纸），没有就用图框序号 */
 function sourceLabel(source: DrawingSource) {
@@ -84,7 +128,11 @@ function sourceLabel(source: DrawingSource) {
 }
 
 function open(source: DrawingSource) {
-  file.value = { id: source.fileId, fileName: source.fileName }
+  // 同一文件内切换图页不重建查看器，由查看器监听 focus 直接定位，避免重复解析 DXF
+  if (file.value?.id !== source.fileId) {
+    file.value = { id: source.fileId, fileName: source.fileName }
+  }
+  current.value = source
   focus.value = focusBoundsOf(source)
   visible.value = true
 }
@@ -94,12 +142,53 @@ function openFile() {
     return
   }
   file.value = { id: props.fallback.fileId, fileName: props.fallback.fileName }
+  current.value = null
   focus.value = null
   visible.value = true
 }
 </script>
 
 <style scoped>
+.preview-bar {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #fafafa;
+}
+/* 标题与页码居中单独一行，关联图纸另起一行，不和页码挤在一起 */
+.preview-head {
+  text-align: center;
+  line-height: 1.6;
+}
+.head-title {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+}
+.current-material {
+  color: #f56c6c;
+  font-size: 12px;
+  font-weight: 600;
+}
+.material-spec {
+  font-weight: 400;
+}
+.related-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #ebeef5;
+}
+.related-label {
+  color: #606266;
+  font-size: 12px;
+  margin-right: 2px;
+}
 .drawing-jump {
   display: inline-flex;
   align-items: center;

@@ -62,8 +62,10 @@
           :current-page="quotaQuery.page"
           :page-size="quotaQuery.size"
           :total="quotaTotal"
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next, jumper"
+          :page-sizes="[10, 20, 50]"
           @current-change="(p: number) => { quotaQuery.page = p; loadQuota() }"
+          @size-change="(s: number) => { quotaQuery.size = s; quotaQuery.page = 1; loadQuota() }"
         />
       </el-tab-pane>
 
@@ -117,8 +119,10 @@
           :current-page="feeQuery.page"
           :page-size="feeQuery.size"
           :total="feeTotal"
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next, jumper"
+          :page-sizes="[10, 20, 50]"
           @current-change="(p: number) => { feeQuery.page = p; loadFee() }"
+          @size-change="(s: number) => { feeQuery.size = s; feeQuery.page = 1; loadFee() }"
         />
       </el-tab-pane>
     </el-tabs>

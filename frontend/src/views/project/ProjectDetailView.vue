@@ -52,11 +52,12 @@
           @clear-highlight="highlightRow = undefined"
         />
       </el-tab-pane>
-      <el-tab-pane label="图纸清单" name="drawing-boq">
+      <el-tab-pane :label="`图纸清单 (${drawingCount})`" name="drawing-boq">
         <DrawingBoqPanel
           :project-id="numberId"
           :refresh-key="dataVersion"
           @go="tab = $event"
+          @count="drawingCount = $event"
         />
       </el-tab-pane>
       <el-tab-pane :label="`疑点复核 (${overview?.issueTotal ?? 0})`" name="issues">
@@ -97,6 +98,8 @@ const project = ref<ProjectVO>()
 const overview = ref<Overview>()
 const tab = ref<string>('overview')
 const highlightRow = ref<number>()
+/** 图纸清单行数（由面板异步汇总后回传，用于 Tab 标题） */
+const drawingCount = ref(0)
 /** 核查/生成报告完成后自增，通知已挂载的 Tab 面板重新取数（Tab 不销毁，不会重新 onMounted） */
 const dataVersion = ref(0)
 

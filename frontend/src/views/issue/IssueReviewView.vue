@@ -77,8 +77,10 @@
       :current-page="query.page"
       :page-size="query.size"
       :total="total"
-      layout="total, prev, pager, next, jumper"
+      layout="total, sizes, prev, pager, next, jumper"
+      :page-sizes="[10, 20, 50]"
       @current-change="onPageChange"
+      @size-change="onSizeChange"
     />
   </el-card>
 </template>
@@ -144,6 +146,12 @@ function reset() {
 
 function onPageChange(page: number) {
   query.page = page
+  reload()
+}
+
+function onSizeChange(size: number) {
+  query.size = size
+  query.page = 1
   reload()
 }
 

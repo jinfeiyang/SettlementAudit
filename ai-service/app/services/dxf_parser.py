@@ -347,6 +347,8 @@ _HEADER_SPACE_RE = re.compile(r"[\s\u3000]+")
 _TABLE_RECAP_HINTS = ("合计", "小计", "总计", "累计")
 _TABLE_MAX_TABLES = 50
 _TABLE_MAX_ROWS = 300
+# 每张表随结果返回的单元格坐标上限：前端只用来把材料名称标红，不需要全图文字
+_CELL_META_LIMIT = 400
 # 无表格块时按文字还原：行容差取行距中位数的比例，列容差取最小列距的比例
 _ROW_TOL_RATIO = 0.4
 _COLUMN_TOL_RATIO = 0.55
@@ -663,6 +665,10 @@ def _text_tables(entries) -> list[dict[str, Any]]:
     heights = [height for _, _, height, _ in entries if height and height > 0]
     row_tol = max(statistics.median(heights) * _ROW_TOL_RATIO, 1e-6) if heights else 1.0
     rows = _cluster_rows([(x, y, text) for x, y, _, text in entries], row_tol)
+    # 每个文字的字高：前端要按它把材料名称标红，聚行时已经把字高丢了，这里按插入点反查
+    height_of = {(round(x, 6), round(y, 6)): height
+                 for x, y, height, _ in entries if height and height > 0}
+    default_height = statistics.median(heights) if heights else 2.0
 
     tables: list[dict[str, Any]] = []
 
@@ -685,6 +691,10 @@ def _text_tables(entries) -> list[dict[str, Any]]:
             body: list[list[str]] = []
             # 收表区域的文字坐标：图纸没画图框时，前端只能靠它定位到这张表所在的页面
             used: list[tuple[float, float]] = [(x, y) for x, y, _ in cluster]
+            # 单元格文字坐标：前端按「材料名称」匹配到这里，在图纸上把该名称标红
+            table_cells: list[dict[str, Any]] = [
+                _cell_meta(x, y, text, height_of, default_height) for x, y, text in cluster
+            ]
             pitches: list[float] = []
             prev_y = cluster[0][1]
             for j in range(start + 1, len(rows)):
@@ -716,6 +726,9 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                     continue
                 body.append(values)
                 used.extend((x, y) for x, y, _ in cells)
+                table_cells.extend(
+                    _cell_meta(x, y, text, height_of, default_height) for x, y, text in cells
+                )
                 if gap > 1e-6:
                     pitches.append(gap)
                 prev_y = y
@@ -732,8 +745,16 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                 "rows": body,
                 "pos": (cluster[0][0], cluster[0][1]),
                 "box": _text_box(used, heights),
+                "cells": table_cells[:_CELL_META_LIMIT],
             })
     return tables
+
+
+def _cell_meta(x: float, y: float, text: str, height_of: dict, default_height: float
+               ) -> dict[str, Any]:
+    """单元格文字 + 插入点 + 字高，供前端在图纸上定位并标红材料名称。"""
+    height = height_of.get((round(x, 6), round(y, 6))) or default_height
+    return {"text": text, "x": round(x, 3), "y": round(y, 3), "h": round(height, 3)}
 
 
 def _text_box(points, heights) -> dict[str, float]:
@@ -754,7 +775,8 @@ def _text_box(points, heights) -> dict[str, float]:
 
 def _build_table(block) -> dict[str, Any] | None:
     """还原单个表格块的列名与数据行。"""
-    items = _table_texts(block)
+    layouts = _layout_texts(block)
+    items = [(x, y, text) for x, y, _, text in layouts]
     if not items:
         return None
     xs, ys = _table_grid(block)
@@ -784,6 +806,9 @@ def _build_table(block) -> dict[str, Any] | None:
         "block": block.name,
         "columns": columns,
         "rows": [[cell.strip() for cell in row] for row in body[:_TABLE_MAX_ROWS]],
+        # 块内坐标：引用到模型空间时在 _tables_from_blocks 里按块引用矩阵换算
+        "cells": [{"text": text, "x": round(x, 3), "y": round(y, 3), "h": round(height or 2.0, 3)}
+                  for x, y, height, text in layouts[:_CELL_META_LIMIT]],
     }
 
 
@@ -1069,7 +1094,9 @@ def _tables_from_blocks(doc) -> list[dict[str, Any]]:
             continue
         refs_of_block = refs.get(block.name) or []
         if not refs_of_block:
+            # 没有块引用就落不到模型空间，块内坐标标红会指到别处，宁可丢掉
             table["pos"] = None
+            table.pop("cells", None)
             tables.append(table)
             continue
         # 同一个表格块可能被多处引用（分幅复制、整表复制），每个引用位置各出一张表：
@@ -1079,8 +1106,29 @@ def _tables_from_blocks(doc) -> list[dict[str, Any]]:
             item["rows"] = [list(row) for row in table["rows"]]  # 各表行数据互不共享
             item["pos"] = (entity.dxf.insert.x, entity.dxf.insert.y)
             item["box"] = _insert_box(entity)
+            item["cells"] = _transform_cells(table.get("cells"), entity)
             tables.append(item)
     return tables
+
+
+def _transform_cells(cells: list[dict[str, Any]] | None, insert) -> list[dict[str, Any]]:
+    """块内文字坐标 → 模型空间：同一张表被复制到多个图幅时，各自按引用的位置换算。"""
+    if not cells:
+        return []
+    matrix = insert.matrix44()
+    base = matrix.transform((0, 0, 0))
+    unit = matrix.transform((1, 0, 0)) - base
+    scale = math.hypot(unit.x, unit.y) or 1.0
+    result: list[dict[str, Any]] = []
+    for cell in cells:
+        point = matrix.transform((cell["x"], cell["y"], 0))
+        result.append({
+            "text": cell["text"],
+            "x": round(point.x, 3),
+            "y": round(point.y, 3),
+            "h": round(cell["h"] * scale, 3),
+        })
+    return result
 
 
 def _insert_box(entity) -> dict[str, float]:

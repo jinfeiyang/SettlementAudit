@@ -10,10 +10,11 @@
     </div>
 
     <el-table
+      ref="tableRef"
       v-loading="drawingLoading"
-      :data="drawingView"
+      :data="pagedRows"
       empty-text="暂无图纸清单：请先在「资料与解析」上传并解析竣工图 DXF/DWG"
-      max-height="520"
+      :height="tableHeight"
     >
       <el-table-column prop="name" label="图纸名称" width="300" class-name="wrap-cell" />
       <el-table-column label="规格" width="200" align="center" class-name="wrap-cell">
@@ -25,7 +26,13 @@
       <el-table-column prop="unit" label="单位" width="200" align="center" />
       <el-table-column label="所在图页" width="180" align="center" class-name="wrap-cell">
         <template #default="{ row }">
-          <DrawingJump :sources="row.sources" :fallback="fallbackOf(row)" show-title />
+          <DrawingJump
+            :sources="row.sources"
+            :fallback="fallbackOf(row)"
+            :material="row.name"
+            :spec="row.spec"
+            show-title
+          />
         </template>
       </el-table-column>
       <el-table-column label="匹配清单" min-width="220" align="center" class-name="wrap-cell">
@@ -55,12 +62,25 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      class="pager"
+      :current-page="page"
+      :page-size="size"
+      :total="drawingView.length"
+      layout="total, sizes, prev, pager, next"
+      :page-sizes="[20, 50, 100]"
+      @current-change="(p: number) => (page = p)"
+      @size-change="onSizeChange"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import type { TableInstance } from 'element-plus'
 import { boqApi, projectApi, type BoqItemVO, type FileVO } from '@/api'
+import { useTableHeight } from '@/utils/useTableHeight'
 import DrawingJump from './DrawingJump.vue'
 import {
   compareDrawingWithBoq,
@@ -73,7 +93,7 @@ import {
 
 /** refreshKey 由父组件在核查完成后自增，Tab 已挂载时也能重新拉取图纸与清单匹配 */
 const props = defineProps<{ projectId: number; refreshKey?: number }>()
-const emit = defineEmits<{ (e: 'go', tab: string): void }>()
+const emit = defineEmits<{ (e: 'go', tab: string): void; (e: 'count', value: number): void }>()
 
 const all = ref<BoqItemVO[]>([])
 const drawingMaterials = ref<DrawingMaterial[]>([])
@@ -82,11 +102,42 @@ const unmatchedOnly = ref(false)
 /** 图纸文件名 → 文件 id：旧解析结果没有图框信息时，至少能按文件名打开整张图 */
 const fileIdsByName = ref<Record<string, number>>({})
 
+const tableRef = ref<TableInstance>()
+/** 表格高度跟随窗口变化，避免固定高度在大屏留白、小屏双重滚动 */
+const tableHeight = useTableHeight(tableRef)
+const page = ref(1)
+const size = ref(50)
+
 const comparisons = computed(() => compareDrawingWithBoq(drawingMaterials.value, all.value))
 
 const drawingView = computed(() =>
   unmatchedOnly.value ? comparisons.value.rows.filter((row) => !row.match) : comparisons.value.rows,
 )
+
+const pagedRows = computed(() =>
+  drawingView.value.slice((page.value - 1) * size.value, page.value * size.value),
+)
+
+function onSizeChange(next: number) {
+  size.value = next
+  page.value = 1
+}
+
+watch(unmatchedOnly, () => {
+  page.value = 1
+})
+
+/** 行数与清单对照后才确定，同步给父级 Tab 标题展示总数 */
+watch(
+  () => comparisons.value.rows.length,
+  (value) => emit('count', value),
+  { immediate: true },
+)
+
+watch(drawingView, (rows) => {
+  // 筛选或重新解析后当前页可能越界，回落最后一页
+  page.value = Math.min(page.value, Math.max(1, Math.ceil(rows.length / size.value)))
+})
 
 const drawingSummaryText = computed(() => {
   if (drawingLoading.value && !drawingMaterials.value.length) {
@@ -200,6 +251,10 @@ onMounted(refreshAll)
 .muted {
   color: #a8abb2;
   font-size: 12px;
+}
+.pager {
+  margin-top: 12px;
+  justify-content: flex-end;
 }
 :deep(.num-cell .cell) {
   font-variant-numeric: tabular-nums;

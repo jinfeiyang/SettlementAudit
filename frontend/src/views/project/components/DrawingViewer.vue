@@ -37,16 +37,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { DxfViewer, type LayerInfo } from 'dxf-viewer'
 import { projectApi } from '@/api'
+import { highlightDxfText } from '@/utils/dxfHighlight'
 
 const props = defineProps<{
   fileId: number
   fileName: string
   /** 只显示某一页：传该图框的坐标范围，加载完直接定位过去 */
   focus?: { minX: number; minY: number; maxX: number; maxY: number } | null
+  /** 要标红的文字（如材料名称）：加载前把命中的文字改成红色 */
+  highlight?: string
+  /** 材料规格：用来区分同名不同规格的行（如 48芯 / 24芯） */
+  highlightSpec?: string
 }>()
 
 /** 超过该体积不再下发前端渲染，改用服务端 SVG 快照，避免浏览器卡死 */
@@ -95,12 +100,25 @@ async function init() {
   loading.value = true
   try {
     const blob = await projectApi.drawing(props.fileId, 'dxf')
-    fileSizeText.value = `DXF ${mb(blob.size)}`
-    if (blob.size > SNAPSHOT_LIMIT) {
-      await loadSnapshot(`图纸较大（${mb(blob.size)}），已切换为服务端快照预览`)
+    // 标红直接改 DXF 里的文字颜色再交给渲染器：字体、字号、位置都不动
+    const renderBlob = props.highlight
+      ? new Blob(
+          [
+            highlightDxfText(
+              await blob.arrayBuffer(),
+              props.highlight,
+              props.highlightSpec,
+            ),
+          ],
+          { type: blob.type },
+        )
+      : blob
+    fileSizeText.value = `DXF ${mb(renderBlob.size)}`
+    if (renderBlob.size > SNAPSHOT_LIMIT) {
+      await loadSnapshot(`图纸较大（${mb(renderBlob.size)}），已切换为服务端快照预览`)
       return
     }
-    dxfUrl = URL.createObjectURL(blob)
+    dxfUrl = URL.createObjectURL(renderBlob)
     await nextTick()
     const el = stage.value
     if (!el) {
@@ -175,6 +193,16 @@ function focusPage() {
     })
   })
 }
+
+/** 预览顶部切换关联图页：同一文件只移动视角，不重新解析整张 DXF */
+watch(
+  () => props.focus,
+  () => {
+    if (viewerReady.value) {
+      focusPage()
+    }
+  },
+)
 
 function applyLayers() {
   for (const layer of layers.value) {
