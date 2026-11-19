@@ -599,13 +599,25 @@ def _norm_header(text: str) -> str:
     return _HEADER_SPACE_RE.sub("", text or "")
 
 
-def _is_header_text(text: str) -> bool:
+def _header_hints(text: str) -> set[str]:
     key = _norm_header(text)
-    return any(hint in key for hint in _TABLE_HEADER_HINTS)
+    return {hint for hint in _TABLE_HEADER_HINTS if hint in key}
+
+
+def _is_header_text(text: str) -> bool:
+    return bool(_header_hints(text))
 
 
 def _is_header_row(row) -> bool:
-    return sum(1 for _, _, text in row if _is_header_text(text)) >= 2
+    """至少两个不同类型的表头词才算表头。
+
+    图签里左右各有一个「工程名称」，按命中次数算会凑够 2 个，把图签当成材料表；
+    按词种去重后「工程名称」只算一个（名称），不会误判。
+    """
+    hints: set[str] = set()
+    for _, _, text in row:
+        hints |= _header_hints(text)
+    return len(hints) >= 2
 
 
 def _split_row(row) -> list[list[tuple[float, float, str]]]:
@@ -874,6 +886,9 @@ def _drawing_frames(doc) -> list[dict[str, Any]]:
             "maxX": extents.extmax.x,
             "maxY": extents.extmax.y,
         })
+    if not frames:
+        # 图纸没做成「图框」块，但图签直接画在模型空间时，按图签的图号识别页
+        return _title_block_frames(doc, texts)
     frames.sort(key=lambda f: (-round(f["y"], 1), f["x"]))
     for index, frame in enumerate(frames):
         frame["no"] = index + 1
@@ -881,15 +896,118 @@ def _drawing_frames(doc) -> list[dict[str, Any]]:
     return frames
 
 
+# 图签「图 号」栏：标签右侧同一行的短文字就是这一页的图号
+_TITLE_NO_RE = re.compile(r"^图\s*号$")
+_TITLE_NO_MAX_DX = 60.0
+_TITLE_NO_DY = 1.5
+# 页边界的筛选：太小的是符号框，太扁的是图例框
+_MIN_SHEET_WIDTH = 250.0
+_MIN_SHEET_HEIGHT = 150.0
+_MIN_SHEET_RATIO = 0.8
+_MAX_SHEET_RATIO = 8.0
+# 图签框外面那一层才是整页：只比图签大一圈，太大的是几页合在一起的外框
+_PAGE_OVER_TITLE_RATIO = 1.02
+_PAGE_MAX_OVER_TITLE = 1.4
+
+
+def _title_block_frames(doc, texts: list[tuple[float, float, str]]) -> list[dict[str, Any]]:
+    """没找到「图框」块时，用图签上的「图 号」识别每一页。
+
+    竣工图常把图签直接画在模型空间：一个"图 号"标签 + 右侧的编号，外面套一圈
+    矩形就是这一页的边界。取包住图签的最小闭合矩形当页范围，图号当张号，
+    材料表就能归到具体哪一页，点"第几张"直接定位过去。
+    """
+    labels = [(x, y, text) for x, y, text in texts if _TITLE_NO_RE.match(text)]
+    if not labels:
+        return []
+    rectangles: list[tuple[float, float, float, float, float]] = []
+    for entity in doc.modelspace().query("LWPOLYLINE"):
+        try:
+            if not entity.closed:
+                continue
+            points = list(entity.get_points("xy"))
+        except Exception:  # noqa: BLE001 个别实体取点失败不影响整体
+            continue
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+        if width < _MIN_SHEET_WIDTH or height < _MIN_SHEET_HEIGHT:
+            continue
+        if not _MIN_SHEET_RATIO <= width / height <= _MAX_SHEET_RATIO:
+            continue
+        rectangles.append((width * height, min(xs), min(ys), max(xs), max(ys)))
+
+    by_x = sorted(texts, key=lambda item: item[0])
+    frames: list[dict[str, Any]] = []
+    seen: set[tuple[float, ...]] = set()
+    for x, y, _ in labels:
+        sheet = ""
+        for tx, ty, text in by_x:
+            dx = tx - x
+            if 0 < dx <= _TITLE_NO_MAX_DX and abs(ty - y) <= _TITLE_NO_DY:
+                sheet = text.strip()
+                break
+        if not sheet:
+            continue
+        # 图号标签在图签格里，图签格又套在整页边框里：
+        # 先取包住标签的最小矩形（图签），再取比它大一圈的最小矩形（整页）
+        title_box = min((rect for rect in rectangles
+                         if rect[1] - 1 <= x <= rect[3] + 1 and rect[2] - 1 <= y <= rect[4] + 1),
+                        default=None)
+        if title_box is None:
+            continue
+        title_width = title_box[3] - title_box[1]
+        title_height = title_box[4] - title_box[2]
+        box = min((rect for rect in rectangles
+                   if rect[0] > title_box[0] * _PAGE_OVER_TITLE_RATIO
+                   and rect[3] - rect[1] <= title_width * _PAGE_MAX_OVER_TITLE
+                   and rect[4] - rect[2] <= title_height * _PAGE_MAX_OVER_TITLE
+                   and rect[1] - 1 <= title_box[1] and rect[2] - 1 <= title_box[2]
+                   and rect[3] + 1 >= title_box[3] and rect[4] + 1 >= title_box[4]),
+                  default=title_box)
+        key = tuple(round(value, 1) for value in box[1:])
+        if key in seen:
+            continue
+        seen.add(key)
+        frames.append({
+            "x": x,
+            "y": y,
+            "minX": box[1],
+            "minY": box[2],
+            "maxX": box[3],
+            "maxY": box[4],
+            "sheet": sheet,
+            "title": "",
+        })
+    # 同排图签的 y 会差零点几，按 20 分桶再排，避免第一排被拆开
+    frames.sort(key=lambda frame: (-round(frame["y"] / 20), frame["x"]))
+    for index, frame in enumerate(frames):
+        frame["no"] = index + 1
+    return frames
+
+
 def _frame_no_of(point, frames: list[dict[str, Any]]) -> int | None:
-    """判断某个点落在哪张图框里；不在任何图框内时取最近的图框。"""
+    """判断某个点落在哪张图框里；图框外的表格/标注一律不挂页。
+
+    以前兜底取最近的图框，结果画在图页外的汇总材料表被挂到隔壁页，
+    点"第 27 张"进去那张图里根本没有这条。宁可标成"未定位"，也不能挂错页。
+    """
     if not frames:
         return None
+    best: int | None = None
+    best_distance = 0.0
     for frame in frames:
-        if (frame["minX"] - 1 <= point[0] <= frame["maxX"] + 1
-                and frame["minY"] - 1 <= point[1] <= frame["maxY"] + 1):
-            return frame["no"]
-    return min(frames, key=lambda f: (f["x"] - point[0]) ** 2 + (f["y"] - point[1]) ** 2)["no"]
+        # 表格压在页边框上时算本页，这里留 2% 页幅的余量
+        margin_x = max(2.0, (frame["maxX"] - frame["minX"]) * 0.02)
+        margin_y = max(2.0, (frame["maxY"] - frame["minY"]) * 0.02)
+        if (frame["minX"] - margin_x <= point[0] <= frame["maxX"] + margin_x
+                and frame["minY"] - margin_y <= point[1] <= frame["maxY"] + margin_y):
+            distance = (frame["x"] - point[0]) ** 2 + (frame["y"] - point[1]) ** 2
+            if best is None or distance < best_distance:
+                best = frame["no"]
+                best_distance = distance
+    return best
 
 
 # 项目情况：标签后带冒号，按后缀识别（避免把"注意："、表格列名之类当成栏目）
@@ -900,6 +1018,12 @@ _PROJECT_LABEL_SUFFIXES = ("名称", "编号", "单位", "地点", "日期", "�
 _PROJECT_ORDER = ("项目名称", "工程名称", "项目编号", "合同编号", "订单编号",
                   "建设单位", "施工单位", "设计单位", "监理单位", "施工地点",
                   "施工日期", "施工费")
+# 图签里栏目名常常不带冒号（表格里一格写栏名、右边格写值），按白名单认列名；
+# 用白名单而不是"以名称结尾"，免得把材料表的「材料名称」也当成项目栏目
+_PROJECT_LABEL_NAMES = frozenset(_PROJECT_ORDER) | {"工程编号", "设计编号", "建设地点"}
+# 图签里「单位」「编 制」这类本身是栏名/签字栏，不能当栏目值
+_PROJECT_VALUE_STOP = frozenset({"单位", "名称", "编号", "日期", "费用", "地点", "编制",
+                                 "审核", "校核", "制图", "校对", "批准", "图号", "比例"})
 
 
 def _nearest_right(items, x0: float, y0: float, tol: float) -> str:
@@ -908,7 +1032,7 @@ def _nearest_right(items, x0: float, y0: float, tol: float) -> str:
     for x, y, _height, text in items:
         if x <= x0 or abs(y - y0) > tol:
             continue
-        if _PROJECT_LABEL_RE.match(text):
+        if _PROJECT_LABEL_RE.match(text) or text.strip() in _PROJECT_LABEL_NAMES:
             continue  # 右边紧挨着的是下一个标签，说明本栏没填
         if best is None or x < best[0]:
             best = (x, text)
@@ -925,14 +1049,19 @@ def extract_project_info(doc) -> list[dict[str, str]]:
     pairs: list[tuple[str, str]] = []
     for x, y, height, text in items:
         match = _PROJECT_LABEL_RE.match(text)
-        if not match:
-            continue
-        label = match.group(1).strip()
-        if not any(label.endswith(suffix) for suffix in _PROJECT_LABEL_SUFFIXES):
-            continue
-        inline = match.group(2).strip()
+        if match:
+            label = match.group(1).strip()
+            if not any(label.endswith(suffix) for suffix in _PROJECT_LABEL_SUFFIXES):
+                continue
+            inline = match.group(2).strip()
+        else:
+            # 图签表格里栏名不带冒号，只认白名单里的栏目名
+            label = text.strip()
+            if label not in _PROJECT_LABEL_NAMES:
+                continue
+            inline = ""
         value = inline or _nearest_right(items, x, y, max(height, 0.5))
-        if value:
+        if value and _norm_header(value) not in _PROJECT_VALUE_STOP:
             pairs.append((label, value))
 
     result: list[dict[str, str]] = []
@@ -1060,7 +1189,9 @@ def summarize_materials(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     result = []
     for item in merged.values():
-        item["quantity"] = round(item["quantity"], 3)
+        # 保留 6 位：沟千米这类单位数量很小（0.0058），只留 3 位会被进位成 0.006，
+        # 与清单的 0.0058 生成虚假的 3.4% 差异
+        item["quantity"] = round(item["quantity"], 6)
         item["tableCount"] = len(item["tables"])
         item["tables"] = item["tables"][:20]
         result.append(item)

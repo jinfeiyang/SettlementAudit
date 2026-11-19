@@ -67,8 +67,9 @@
         :file-id="file.id"
         :file-name="file.fileName"
         :focus="focus"
-        :highlight="material"
+        :highlight="highlight || material"
         :highlight-spec="spec"
+        :highlight-fallback="highlight ? material : ''"
       />
     </el-dialog>
   </span>
@@ -95,8 +96,13 @@ const props = withDefaults(
     material?: string
     /** 材料规格，跟在名称后面一起展示 */
     spec?: string
+    /**
+     * 图纸里优先标红的文字（清单行名）：安装类清单行按同名行标红，
+     * 图上找不到时再退回 material（材料表名称）
+     */
+    highlight?: string
   }>(),
-  { sources: () => [], fallback: null, showTitle: false, material: '', spec: '' },
+  { sources: () => [], fallback: null, showTitle: false, material: '', spec: '', highlight: '' },
 )
 
 const visible = ref(false)

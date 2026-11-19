@@ -8,6 +8,7 @@ import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.exception.BizException;
 import com.zjlt.preaudit.common.security.UserContext;
 import com.zjlt.preaudit.common.util.JsonUtil;
+import com.zjlt.preaudit.module.ai.client.AiServiceClient;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
 import com.zjlt.preaudit.module.boq.mapper.BoqItemMapper;
 import com.zjlt.preaudit.module.issue.entity.Issue;
@@ -25,11 +26,16 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -46,6 +52,43 @@ public class ProjectService {
     private final IssueMapper issueMapper;
     private final ReportMapper reportMapper;
     private final AsyncTaskMapper asyncTaskMapper;
+    private final AiServiceClient aiClient;
+
+    /**
+     * 导入图纸识别项目信息：只解析、不落库，供新建项目时预填表单。
+     */
+    public Map<String, Object> parseDrawingMeta(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BizException("请选择图纸文件");
+        }
+        String name = StringUtils.hasText(file.getOriginalFilename())
+                ? file.getOriginalFilename() : "drawing.dxf";
+        Path temp = null;
+        try {
+            temp = Files.createTempFile("preaudit-meta-", ".tmp");
+            file.transferTo(temp);
+            Map<String, Object> result = aiClient.parseDrawing(temp, name)
+                    .orElseThrow(() -> new BizException("图纸解析失败，请确认是 DXF/DWG 图纸"));
+            if (!"SUCCESS".equals(String.valueOf(result.get("status")))) {
+                throw new BizException(String.valueOf(result.getOrDefault("message", "图纸解析失败")));
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("fileName", name);
+            out.put("projectInfo", result.get("projectInfo"));
+            out.put("summary", result.get("summary"));
+            return out;
+        } catch (IOException e) {
+            throw new BizException("读取图纸失败：" + e.getMessage());
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                    // 临时文件删不掉不影响识别结果
+                }
+            }
+        }
+    }
 
     public PageResult<ProjectDtos.ProjectVO> page(String keyword, String status, String engType, long page, long size) {
         Page<Project> p = new Page<>(Math.max(1, page), Math.min(100, Math.max(1, size)));

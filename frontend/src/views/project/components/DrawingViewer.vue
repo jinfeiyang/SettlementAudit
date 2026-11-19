@@ -52,6 +52,8 @@ const props = defineProps<{
   highlight?: string
   /** 材料规格：用来区分同名不同规格的行（如 48芯 / 24芯） */
   highlightSpec?: string
+  /** 主目标在图上找不到时的备用文字（如清单行名找不到就退回材料表名称） */
+  highlightFallback?: string
 }>()
 
 /** 超过该体积不再下发前端渲染，改用服务端 SVG 快照，避免浏览器卡死 */
@@ -108,6 +110,7 @@ async function init() {
               await blob.arrayBuffer(),
               props.highlight,
               props.highlightSpec,
+              props.highlightFallback,
             ),
           ],
           { type: blob.type },

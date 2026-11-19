@@ -2,7 +2,7 @@ package com.zjlt.preaudit.common.util;
 
 import com.zjlt.preaudit.common.exception.BizException;
 import jakarta.servlet.http.HttpServletResponse;
-import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.EncryptedDocumentException;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.DataFormatter;
@@ -11,6 +11,7 @@ import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.io.IOException;
@@ -33,12 +34,11 @@ public final class ExcelUtil {
     }
 
     public static Workbook open(InputStream in, String filename) {
+        // 按文件内容判断 xls/xlsx，不能只看扩展名：
+        // 老系统导出的 .xls 常被改名成 .xlsx，按后缀走 XSSF 会报 OLE2 错误
         try {
-            if (filename != null && filename.toLowerCase(Locale.ROOT).endsWith(".xls")) {
-                return new HSSFWorkbook(in);
-            }
-            return new XSSFWorkbook(in);
-        } catch (IOException e) {
+            return WorkbookFactory.create(in);
+        } catch (IOException | EncryptedDocumentException e) {
             throw new BizException("Excel 解析失败：" + e.getMessage());
         }
     }

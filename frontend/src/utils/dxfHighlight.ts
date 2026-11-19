@@ -29,9 +29,15 @@ interface DxfText {
   end: number
 }
 
-export function highlightDxfText(buffer: ArrayBuffer, needle: string, spec = ''): ArrayBuffer {
+export function highlightDxfText(
+  buffer: ArrayBuffer,
+  needle: string,
+  spec = '',
+  fallback = '',
+): ArrayBuffer {
   const target = normalize(needle)
   const specText = normalize(spec)
+  const fallbackText = normalize(fallback)
   const bytes = new Uint8Array(buffer)
   if (!target || bytes.length < 4) {
     return buffer
@@ -140,18 +146,32 @@ export function highlightDxfText(buffer: ArrayBuffer, needle: string, spec = '')
     row.items.push(item)
   }
 
-  const marked: DxfText[] = []
-  for (const list of rows.values()) {
-    for (const row of list) {
-      const names = row.items.filter((item) => matchesName(item.text, target))
-      if (!names.length) {
-        continue
-      }
-      // 有规格时要求同一行出现该规格：24 芯那行不会被算进来
-      if (specText && !row.items.some((item) => item.text.includes(specText))) {
-        continue
-      }
-      marked.push(...names)
+  // 按优先级找要标红的行，先要求"整格文字与目标相同"，再放宽到包含。
+  // 整格优先是关键：点材料「光分纤箱」时只标材料表那一格，
+  // 不会把工程量表里「安装光分纤箱、光分路箱墙壁式」这整句也标红；
+  // 反过来点安装行时也只标同名的工程量行，不会碰材料格。
+  const candidates: Array<[string, string, MatchMode]> = fallbackText
+    ? [
+        [target, '', 'exact'],
+        [target, '', 'contains'],
+        [fallbackText, specText, 'exact'],
+        [fallbackText, specText, 'contains'],
+        [fallbackText, '', 'contains'],
+        [fallbackText, '', 'partial'],
+      ]
+    : [
+        // 只有材料名称时先按规格锁定，避免 48芯 / 24芯 一起标红
+        [target, specText, 'exact'],
+        [target, '', 'exact'],
+        [target, specText, 'contains'],
+        [target, '', 'contains'],
+        [target, '', 'partial'],
+      ]
+  let marked: DxfText[] = []
+  for (const [name, rowSpec, mode] of candidates) {
+    marked = collectMarked(rows, name, rowSpec, mode)
+    if (marked.length) {
+      break
     }
   }
   if (!marked.length) {
@@ -231,6 +251,42 @@ function normalize(value: string) {
   return value.replace(/\s+/g, '')
 }
 
-function matchesName(text: string, target: string) {
-  return Boolean(text) && (text.includes(target) || (text.length >= 3 && target.includes(text)))
+/** exact=整格相同，contains=文字包含目标，partial=文字是目标的一部分（材料表简写） */
+type MatchMode = 'exact' | 'contains' | 'partial'
+
+function collectMarked(
+  rows: Map<number, Array<{ y: number; items: DxfText[] }>>,
+  target: string,
+  specText: string,
+  mode: MatchMode,
+): DxfText[] {
+  const marked: DxfText[] = []
+  if (!target) {
+    return marked
+  }
+  for (const list of rows.values()) {
+    for (const row of list) {
+      const names = row.items.filter((item) => {
+        if (!item.text) {
+          return false
+        }
+        if (mode === 'exact') {
+          return item.text === target
+        }
+        if (item.text.includes(target)) {
+          return true
+        }
+        return mode === 'partial' && item.text.length >= 3 && target.includes(item.text)
+      })
+      if (!names.length) {
+        continue
+      }
+      // 有规格时要求同一行出现该规格：24 芯那行不会被算进来
+      if (specText && !row.items.some((item) => item.text.includes(specText))) {
+        continue
+      }
+      marked.push(...names)
+    }
+  }
+  return marked
 }

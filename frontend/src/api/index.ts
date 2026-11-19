@@ -195,6 +195,15 @@ export const projectApi = {
     form.append('file', file)
     return request.post<FileVO>(`/projects/${id}/files`, form)
   },
+  parseDrawingMeta: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request.post<{
+      fileName: string
+      projectInfo: { label: string; value: string }[]
+      summary: string
+    }>('/projects/parse-drawing', form)
+  },
   parseFile: (fileId: number) => request.post<void>(`/files/${fileId}/parse`),
   parseFileSync: (fileId: number) => request.post<FileVO>(`/files/${fileId}/parse-sync`),
   deleteFile: (fileId: number) => request.delete<void>(`/files/${fileId}`),

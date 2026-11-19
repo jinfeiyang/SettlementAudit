@@ -373,6 +373,18 @@ export function compareDrawingWithBoq(materials: DrawingMaterial[], boqItems: Bo
   return { rows, byBoqId, nearestByBoqId, matched, unmatched: rows.length - matched }
 }
 
+/** 数量对比结论：一致 / 图纸偏大 / 图纸偏小 / 无法比较（单位不可换算） */
+export function diffState(rate?: number | null): 'CONSISTENT' | 'MORE' | 'LESS' | 'NA' {
+  if (rate === null || rate === undefined) {
+    return 'NA'
+  }
+  if (Math.abs(rate) < 0.5) {
+    return 'CONSISTENT'
+  }
+  return rate > 0 ? 'MORE' : 'LESS'
+}
+
+/** 保留 6 位：沟千米这类小数量只留 3 位会把 0.0058 进位成 0.006，造成假的偏差 */
 function round(value: number): number {
-  return Math.round(value * 1000) / 1000
+  return Math.round(value * 1e6) / 1e6
 }

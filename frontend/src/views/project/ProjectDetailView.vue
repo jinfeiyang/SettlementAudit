@@ -50,12 +50,14 @@
           @changed="refreshOverview"
           @go="tab = $event"
           @clear-highlight="highlightRow = undefined"
+          @locate-drawing="onLocateDrawing"
         />
       </el-tab-pane>
       <el-tab-pane :label="`图纸清单 (${drawingCount})`" name="drawing-boq">
         <DrawingBoqPanel
           :project-id="numberId"
           :refresh-key="dataVersion"
+          :focus="drawingFocus"
           @go="tab = $event"
           @count="drawingCount = $event"
         />
@@ -184,6 +186,16 @@ async function generateReport() {
   await refreshOverview()
   tab.value = 'report'
   return report
+}
+
+/** 工程量清单 → 图纸清单：切到图纸清单并定位到对应材料 */
+const drawingFocus = ref<{ key: string; seq: number }>()
+let drawingFocusSeq = 0
+
+function onLocateDrawing(key: string) {
+  // seq 自增，连续定位同一行时也要重新滚动/闪烁
+  drawingFocus.value = { key, seq: ++drawingFocusSeq }
+  tab.value = 'drawing-boq'
 }
 
 function onLocate(rowNo?: number) {

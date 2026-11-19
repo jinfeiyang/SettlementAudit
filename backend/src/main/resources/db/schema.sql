@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS boq_item (
   item_name VARCHAR(255) COMMENT '原始名称',
   feature_desc TEXT COMMENT '项目特征',
   unit VARCHAR(32),
-  quantity DECIMAL(18,4),
+  quantity DECIMAL(18,6),
   unit_price DECIMAL(18,4),
   total_price DECIMAL(18,2),
   std_item_code VARCHAR(64) COMMENT '标准化后编号（清单标准化产出）',

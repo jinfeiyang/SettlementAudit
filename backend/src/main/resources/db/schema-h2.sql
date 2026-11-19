@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS boq_item (
   item_name VARCHAR(255),
   feature_desc CLOB,
   unit VARCHAR(32),
-  quantity DECIMAL(18,4),
+  quantity DECIMAL(18,6),
   unit_price DECIMAL(18,4),
   total_price DECIMAL(18,2),
   std_item_code VARCHAR(64),
@@ -196,3 +196,6 @@ CREATE INDEX IF NOT EXISTS idx_project_no ON proj_project (project_no);
 -- 清单行类别与来源表：多表合并导入后用于区分工程量 / 乙供材料 / 甲供物资
 ALTER TABLE boq_item ADD COLUMN IF NOT EXISTS item_type VARCHAR(32);
 ALTER TABLE boq_item ADD COLUMN IF NOT EXISTS source_sheet VARCHAR(64);
+
+-- 清单数量精度：源文件存在 0.00372 这类 5 位小数（沟千米），4 位会把数值改掉
+ALTER TABLE boq_item ALTER COLUMN quantity DECIMAL(18,6);

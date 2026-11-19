@@ -12,13 +12,24 @@
           <el-option label="工程量" value="QUOTA" />
           <el-option label="甲供材料" value="SUPPLY_MATERIAL" />
           <el-option label="甲供设备" value="SUPPLY_EQUIPMENT" />
-          <el-option label="其他费" value="OTHER" />
         </el-select>
-        <el-button @click="refreshAll">刷新</el-button>
+        <el-select v-model="matchFilter" placeholder="全部匹配结果" clearable style="width: 150px">
+          <el-option label="名称一致" value="LEVEL1" />
+          <el-option label="相似关联" value="LEVEL2" />
+          <el-option label="图纸无对应" value="UNMATCHED" />
+        </el-select>
+        <el-select v-model="diffFilter" placeholder="全部数量对比" clearable style="width: 150px">
+          <el-option label="数量一致" value="CONSISTENT" />
+          <el-option label="图纸偏大" value="MORE" />
+          <el-option label="图纸偏小" value="LESS" />
+          <el-option label="无法比较" value="NA" />
+        </el-select>
+        <el-button type="primary" @click="refreshAll">查询</el-button>
+        <el-button @click="resetQuery">重置</el-button>
+        <el-checkbox v-model="drawingUnmatchedOnly" size="small">只看图纸未匹配</el-checkbox>
         <el-button @click="boqApi.template(projectId)">下载清单模板</el-button>
         <el-button @click="$emit('go', 'files')">上传/解析清单</el-button>
         <el-button type="danger" plain @click="clearAll">清空清单</el-button>
-        <el-checkbox v-model="drawingUnmatchedOnly" size="small">只看图纸未匹配</el-checkbox>
         <span v-if="highlightRow" class="hint">
           已定位第 {{ highlightRow }} 行<template v-if="locatedRow">：{{ locatedRow.itemName }}</template>
           <template v-else>（当前清单中没有这一行）</template>
@@ -32,10 +43,6 @@
         <span>其他费及补差：<b>{{ money(otherTotal) }}</b> 元</span>
         <span>取费合计：<b>{{ money(feeTotal) }}</b> 元</span>
         <span class="grand">清单合计：<b>{{ money(grandTotal) }}</b> 元</span>
-        <span class="hint">
-          甲供器材由建设单位提供、不计入结算；表八光缆行按表七固定单价法计施工费；
-          取费行由规则库生成，随清单重新导入更新
-        </span>
       </div>
 
       <el-table
@@ -97,6 +104,7 @@
                 :fallback="fallbackOf(row.drawing)"
                 :material="row.drawing.name"
                 :spec="row.drawing.spec"
+                :highlight="row.itemType === 'QUOTA' ? row.itemName : ''"
               />
             </template>
             <span v-else-if="!drawingMaterials.length" class="muted">图纸清单为空</span>
@@ -108,9 +116,17 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="70" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right" class-name="action-cell">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+            <el-button
+              v-if="row.drawing"
+              link
+              type="primary"
+              @click="emit('locate-drawing', row.drawing.key)"
+            >
+              图纸清单
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -178,6 +194,7 @@
               :fallback="fallbackOf(detailRow.drawing)"
               :material="detailRow.drawing.name"
               :spec="detailRow.drawing.spec"
+              :highlight="detailRow.itemType === 'QUOTA' ? detailRow.itemName : ''"
               show-title
             />
           </el-descriptions-item>
@@ -269,6 +286,7 @@ import {
 } from '@/utils/cableCheck'
 import {
   compareDrawingWithBoq,
+  diffState,
   mergeDrawingMaterials,
   type DrawingFrameItem,
   type DrawingMaterial,
@@ -292,6 +310,8 @@ const emit = defineEmits<{
   (e: 'changed'): void
   (e: 'go', tab: string): void
   (e: 'clear-highlight'): void
+  /** 跳到图纸清单并定位到这条清单行匹配的图纸材料 */
+  (e: 'locate-drawing', key: string): void
 }>()
 
 const tableRef = ref<TableInstance>()
@@ -304,6 +324,10 @@ const loading = ref(false)
 const keyword = ref('')
 /** 类别筛选：联通结算模板一张表会同时导入工程量、乙供材料、甲供物资 */
 const typeFilter = ref('')
+/** 图纸匹配结果筛选：名称一致 / 相似关联 / 图纸无对应 */
+const matchFilter = ref('')
+/** 数量对比结果筛选：一致 / 图纸偏大 / 图纸偏小 / 无法比较 */
+const diffFilter = ref('')
 const page = ref(1)
 const size = ref(50)
 
@@ -359,8 +383,8 @@ const grandTotal = computed(() => directTotal.value + feeTotal.value)
 const filtered = computed(() => {
   const kw = keyword.value.trim()
   return all.value.filter((item) => {
-    // 取费行是导入时按规则生成的计算结果，只在金额汇总条体现，不作为清单行展示
-    if (item.itemType === 'FEE') {
+    // 取费行是导入时按规则生成的计算结果，其他费属结算口径行，都只在金额汇总条体现
+    if (item.itemType === 'FEE' || item.itemType === 'OTHER') {
       return false
     }
     if (typeFilter.value && (item.itemType || 'QUOTA') !== typeFilter.value) {
@@ -369,6 +393,32 @@ const filtered = computed(() => {
     if (drawingUnmatchedOnly.value) {
       // 取费/其他费行本就不参与图纸匹配，勾选「只看图纸未匹配」时不该混进来
       if (isPricedExtraRow(item) || comparisons.value.byBoqId.get(item.id)) {
+        return false
+      }
+    }
+    if (matchFilter.value) {
+      // 取费/其他费行没有图纸可比，任何匹配结果筛选下都不该出现
+      if (isPricedExtraRow(item)) {
+        return false
+      }
+      const drawing = comparisons.value.byBoqId.get(item.id)
+      if (matchFilter.value === 'UNMATCHED' && drawing) {
+        return false
+      }
+      if (matchFilter.value === 'LEVEL1' && drawing?.level !== 1) {
+        return false
+      }
+      if (matchFilter.value === 'LEVEL2' && drawing?.level !== 2) {
+        return false
+      }
+    }
+    if (diffFilter.value) {
+      if (isPricedExtraRow(item)) {
+        return false
+      }
+      const drawing = comparisons.value.byBoqId.get(item.id)
+      // 没有匹配到图纸时没有数量对比结论，选任何对比结果都不展示
+      if (!drawing || diffState(drawing.diffRate) !== diffFilter.value) {
         return false
       }
     }
@@ -476,6 +526,17 @@ async function refreshAll() {
   await Promise.all([load(), loadDrawings()])
 }
 
+/** 重置查询条件并重新取数 */
+async function resetQuery() {
+  keyword.value = ''
+  typeFilter.value = ''
+  matchFilter.value = ''
+  diffFilter.value = ''
+  drawingUnmatchedOnly.value = false
+  page.value = 1
+  await refreshAll()
+}
+
 /**
  * 回溯定位（D2）：翻到目标行所在页并滚动到行、高亮。
  * 用「滚动 + 高亮」而不是「筛选出一行」：核对疑点要看相邻行和同类项目，
@@ -489,6 +550,8 @@ function focusHighlight() {
   }
   keyword.value = ''
   typeFilter.value = ''
+  matchFilter.value = ''
+  diffFilter.value = ''
   drawingUnmatchedOnly.value = false
   // 在「可见行」里找：取费行之类的已计价行不在清单表格里，提示要说清楚是没有这行
   const index = filtered.value.findIndex((item) => item.rowNo === rowNo)
@@ -565,12 +628,12 @@ function quotaNo(row: BoqItemVO) {
   return row.stdItemCode || row.matchQuotaCode || '-'
 }
 
-/** 数量统一按千分位展示，最多保留 3 位小数 */
+/** 数量按源文件实际值展示（最多 6 位小数），不做四舍五入改写数值 */
 function qty(value?: number | null) {
   if (value === undefined || value === null || Number.isNaN(Number(value))) {
     return '-'
   }
-  return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 3 })
+  return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
 }
 
 /** 图纸数量相对清单数量的偏差：±0.5% 以内视为一致 */
@@ -598,7 +661,7 @@ async function clearAll() {
 
 watch(() => props.highlightRow, focusHighlight)
 watch(() => props.refreshKey, () => refreshAll())
-watch([keyword, typeFilter, drawingUnmatchedOnly], () => {
+watch([keyword, typeFilter, matchFilter, diffFilter, drawingUnmatchedOnly], () => {
   page.value = 1
 })
 
@@ -734,6 +797,11 @@ onMounted(() => {
   line-height: 1.45;
 }
 :deep(.wrap-cell .cell) {
+  padding: 4px 8px;
+}
+/* 操作列按钮不换行，整行展示 */
+:deep(.action-cell .cell) {
+  white-space: nowrap;
   padding: 4px 8px;
 }
 

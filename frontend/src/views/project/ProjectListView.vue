@@ -81,6 +81,22 @@
 
   <el-dialog v-model="dialogVisible" :title="editing ? '编辑预审项目' : '新建预审项目'" width="560px">
     <el-form ref="formRef" :model="form" :rules="rules" label-width="110px">
+      <el-form-item v-if="!editing" label="导入图纸">
+        <div class="guess-box">
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            accept=".dwg,.dxf"
+            :show-file-list="false"
+            :on-change="guessFromDrawing"
+          >
+            <el-button :loading="guessing">选择图纸自动识别</el-button>
+          </el-upload>
+          <span class="guess-tip">
+            {{ guessNote || '支持 DXF/DWG，自动识别图签里的项目名称、编号、参建单位等' }}
+          </span>
+        </div>
+      </el-form-item>
       <el-form-item label="项目名称" prop="projectName">
         <el-input v-model="form.projectName" placeholder="如：XX 市 XX 段光缆线路工程" />
       </el-form-item>
@@ -104,7 +120,7 @@
         <el-input v-model="form.supervisorUnit" placeholder="选填" />
       </el-form-item>
       <el-form-item label="地市">
-        <el-input v-model="form.city" placeholder="如：杭州" />
+        <el-input v-model="form.city" placeholder="如：台州" />
       </el-form-item>
       <el-form-item label="结算送审金额">
         <el-input-number v-model="form.settleAmount" :min="0" :step="1000" :precision="2" style="width: 220px" />
@@ -128,7 +144,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules, type UploadFile } from 'element-plus'
 import { projectApi, type ProjectVO } from '@/api'
 import { datetime, money, statusTag } from '@/utils/format'
 
@@ -141,6 +157,78 @@ const dialogVisible = ref(false)
 const editing = ref(false)
 const editingId = ref<number>()
 const formRef = ref<FormInstance>()
+const guessing = ref(false)
+const guessNote = ref('')
+
+// 图签栏目名 → 表单字段：同一含义有多种写法，按顺序取第一个非空的
+const LABEL_FIELDS: Record<string, string> = {
+  项目名称: 'projectName',
+  工程名称: 'projectName',
+  项目编号: 'projectNo',
+  合同编号: 'contractNo',
+  订单编号: 'orderNo',
+  施工单位: 'builderUnit',
+  监理单位: 'supervisorUnit',
+}
+const CITY_NAMES = ['杭州', '宁波', '温州', '嘉兴', '湖州', '绍兴', '金华', '衢州', '舟山', '台州', '丽水']
+
+async function guessFromDrawing(file: UploadFile) {
+  if (!file.raw) {
+    return
+  }
+  guessing.value = true
+  guessNote.value = '识别中…'
+  try {
+    const res = await projectApi.parseDrawingMeta(file.raw)
+    fillFromProjectInfo(res.projectInfo || [])
+  } catch (e: any) {
+    guessNote.value = e?.message || '识别失败，请手工填写'
+  } finally {
+    guessing.value = false
+  }
+}
+
+function fillFromProjectInfo(info: { label: string; value: string }[]) {
+  const filled: string[] = []
+  for (const { label, value } of info) {
+    const text = (value || '').trim()
+    if (!text) {
+      continue
+    }
+    const key = LABEL_FIELDS[label]
+    // 已经填过的不覆盖，避免把手工改过的内容冲掉
+    if (key && !String(form[key] ?? '').trim()) {
+      form[key] = text
+      filled.push(label)
+    }
+    if (label === '施工地点' && !form.city) {
+      const city = CITY_NAMES.find((name) => text.includes(name))
+      if (city) {
+        form.city = city
+        filled.push('地市')
+      }
+    }
+    if (label === '施工费' && form.constructionFee == null) {
+      const amount = parseAmount(text)
+      if (amount != null) {
+        form.constructionFee = amount
+        filled.push('施工费')
+      }
+    }
+  }
+  guessNote.value = filled.length
+    ? `已识别并填入：${filled.join('、')}`
+    : '未识别到项目信息，请手工填写'
+}
+
+function parseAmount(text: string) {
+  const wan = text.match(/([\d.]+)\s*万元/)
+  if (wan) {
+    return Math.round(Number(wan[1]) * 10000 * 100) / 100
+  }
+  const yuan = text.match(/([\d.]+)\s*元/)
+  return yuan ? Number(yuan[1]) : null
+}
 
 const statusOptions = [
   { value: 'DRAFT', label: '草稿' },
@@ -203,6 +291,7 @@ function onSizeChange(size: number) {
 function openCreate() {
   editing.value = false
   editingId.value = undefined
+  guessNote.value = ''
   Object.assign(form, {
     projectName: '',
     projectNo: '',
@@ -280,6 +369,20 @@ onMounted(reload)
 </script>
 
 <style scoped>
+.guess-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.guess-tip {
+  flex: 1;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .header-row {
   display: flex;
   justify-content: space-between;

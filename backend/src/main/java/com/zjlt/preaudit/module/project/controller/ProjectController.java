@@ -17,6 +17,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.Map;
 
 @Tag(name = "预审项目")
 @RestController
@@ -40,6 +43,12 @@ public class ProjectController {
     @PostMapping
     public R<ProjectDtos.ProjectVO> create(@Valid @RequestBody ProjectDtos.SaveReq req) {
         return R.ok(projectService.create(req));
+    }
+
+    @Operation(summary = "导入图纸识别项目信息（新建项目预填）")
+    @PostMapping("/parse-drawing")
+    public R<Map<String, Object>> parseDrawing(@RequestParam("file") MultipartFile file) {
+        return R.ok(projectService.parseDrawingMeta(file));
     }
 
     @Operation(summary = "修改项目")
