@@ -30,4 +30,10 @@ public final class BoqDtos {
     public record ImportResult(Long fileId, int rows, int imported, BigDecimal parseRate,
                                String engType, String engTypeName, String message) {
     }
+
+    /** 表七逐段明细（B4 重复计费识别数据源） */
+    public record FixedSegmentVO(Long id, Integer rowNo, String segmentName, Integer coreCount,
+                                 BigDecimal length, BigDecimal amount, String dedupKey,
+                                 Integer dupGroup, String dupType) {
+    }
 }

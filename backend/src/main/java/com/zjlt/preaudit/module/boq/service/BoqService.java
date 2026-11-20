@@ -8,8 +8,10 @@ import com.zjlt.preaudit.common.exception.BizException;
 import com.zjlt.preaudit.common.util.TextUtil;
 import com.zjlt.preaudit.module.boq.dto.BoqDtos;
 import com.zjlt.preaudit.module.boq.entity.BoqDrawingMatch;
+import com.zjlt.preaudit.module.boq.entity.BoqFixedSegment;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
 import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMatchMapper;
+import com.zjlt.preaudit.module.boq.mapper.BoqFixedSegmentMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqItemMapper;
 import com.zjlt.preaudit.module.boq.parser.BoqExcelParser;
 import com.zjlt.preaudit.module.check.dto.CheckDtos;
@@ -46,6 +48,7 @@ public class BoqService {
 
     private final BoqItemMapper boqItemMapper;
     private final BoqDrawingMatchMapper drawingMatchMapper;
+    private final BoqFixedSegmentMapper fixedSegmentMapper;
     private final ProjectMapper projectMapper;
     private final RuleQuotaMapper ruleQuotaMapper;
     private final IssueMapper issueMapper;
@@ -61,9 +64,12 @@ public class BoqService {
             throw new BizException(404, "项目不存在：" + projectId);
         }
         BoqExcelParser.ParseOutcome outcome = parser.parse(in, filename);
-        // 重新导入视为清单整体替换：清理历史清单项与疑点（结论不可追溯残留）
+        // 重新导入视为清单整体替换：清理历史清单项、表七明细与疑点（结论不可追溯残留）
         boqItemMapper.delete(Wrappers.<BoqItem>lambdaQuery().eq(BoqItem::getProjectId, projectId));
+        fixedSegmentMapper.delete(Wrappers.<BoqFixedSegment>lambdaQuery().eq(BoqFixedSegment::getProjectId, projectId));
         issueMapper.delete(Wrappers.<Issue>lambdaQuery().eq(Issue::getProjectId, projectId));
+        // 表七段落明细随本次导入入库，并标记重复段（B4 识别数据源）
+        persistFixedSegments(projectId, fileId, outcome.fixedSegments());
 
         if (outcome.rows().isEmpty()) {
             return new BoqDtos.ImportResult(fileId, outcome.candidateRows(), 0, BigDecimal.ZERO,
@@ -299,7 +305,55 @@ public class BoqService {
         drawingMatchMapper.delete(Wrappers.<BoqDrawingMatch>lambdaQuery()
                 .eq(BoqDrawingMatch::getProjectId, projectId));
         boqItemMapper.delete(Wrappers.<BoqItem>lambdaQuery().eq(BoqItem::getProjectId, projectId));
+        fixedSegmentMapper.delete(Wrappers.<BoqFixedSegment>lambdaQuery().eq(BoqFixedSegment::getProjectId, projectId));
         issueMapper.delete(Wrappers.<Issue>lambdaQuery().eq(Issue::getProjectId, projectId));
+    }
+
+    /** 表七逐段明细入库：先做反转/相似重复分组，再逐段落库 */
+    private void persistFixedSegments(Long projectId, Long fileId, List<BoqExcelParser.FixedSegment> segments) {
+        if (segments == null || segments.isEmpty()) {
+            return;
+        }
+        List<FixedSegmentDupDetector.Result> dups = FixedSegmentDupDetector.detect(
+                segments.stream().map(BoqExcelParser.FixedSegment::segmentName).toList());
+        for (int i = 0; i < segments.size(); i++) {
+            BoqExcelParser.FixedSegment src = segments.get(i);
+            FixedSegmentDupDetector.Result dup = dups.get(i);
+            BoqFixedSegment seg = new BoqFixedSegment();
+            seg.setProjectId(projectId);
+            seg.setSourceFileId(fileId);
+            seg.setRowNo(src.rowNo());
+            seg.setSegmentName(src.segmentName());
+            seg.setCoreCount(src.coreCount() == null ? null : src.coreCount().intValue());
+            seg.setLength(src.length());
+            seg.setFeeRate(src.feeRate());
+            seg.setDiscount(src.discount());
+            seg.setOtherFee(TextUtil.firstNumber(src.otherFeeRaw()));
+            seg.setFuseCores(src.fuseCores());
+            seg.setFuseRate(src.fuseRate());
+            seg.setAmount(src.amount());
+            seg.setDedupKey(dup.dedupKey());
+            seg.setDupGroup(dup.dupGroup());
+            seg.setDupType(dup.dupType());
+            fixedSegmentMapper.insert(seg);
+        }
+        long dupRows = dups.stream().filter(d -> d.dupGroup() > 0).count();
+        if (dupRows > 0) {
+            log.warn("项目 {} 表七共 {} 段，疑似重复 {} 段（反转/相似），请人工复核",
+                    projectId, segments.size(), dupRows);
+        }
+    }
+
+    /** 表七段落列表（B4 重复计费数据源） */
+    public List<BoqDtos.FixedSegmentVO> listFixedSegments(Long projectId) {
+        return fixedSegmentMapper.selectList(Wrappers.<BoqFixedSegment>lambdaQuery()
+                        .eq(BoqFixedSegment::getProjectId, projectId)
+                        .orderByAsc(BoqFixedSegment::getRowNo))
+                .stream()
+                .map(s -> new BoqDtos.FixedSegmentVO(s.getId(), s.getRowNo(), s.getSegmentName(),
+                        s.getCoreCount(), s.getLength(), s.getAmount(), s.getDedupKey(),
+                        s.getDupGroup(), s.getDupType()))
+                .toList();
     }
 
     /** 清单行的人工匹配结论（MATCH 指定图纸材料 / UNMATCH 取消匹配） */

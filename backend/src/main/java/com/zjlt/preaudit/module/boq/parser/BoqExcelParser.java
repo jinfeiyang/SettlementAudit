@@ -81,6 +81,7 @@ public class BoqExcelParser {
 
     private ParseOutcome parseSettlementTemplate(Workbook wb) {
         List<Row> rows = new ArrayList<>();
+        List<FixedSegment> fixedSegments = new ArrayList<>();
         List<String> parts = new ArrayList<>();
         int candidates = 0;
         int[] seq = {0};
@@ -96,11 +97,11 @@ public class BoqExcelParser {
             }
         }
 
-        // 表七只作为“计价依据”：按芯数聚合出固定单价施工费，不单独生成清单行
+        // 表七：按芯数聚合出固定单价施工费（计价依据），同时保留逐段明细供 B4 重复计费识别
         java.util.Map<String, BigDecimal[]> fixedByCore = java.util.Map.of();
         int fixedSheet = findSheet(wb, "表七");
         if (fixedSheet >= 0) {
-            fixedByCore = parseFixedPriceSheet(ExcelUtil.readRows(wb, fixedSheet), wb);
+            fixedByCore = parseFixedPriceSheet(ExcelUtil.readRows(wb, fixedSheet), wb, fixedSegments);
         }
 
         int supplySheet = findSheet(wb, "表八");
@@ -137,7 +138,8 @@ public class BoqExcelParser {
                 String.join("、", parts), rows.size());
         // 表二 J_A_PRJ_FEE：定额法建安工程费（除税），用于补齐定额法完整造价
         BigDecimal quotaBuildTotal = readQuotaBuildTotal(wb);
-        return new ParseOutcome(rows, candidates, rate.doubleValue(), message, "表三甲等", hasPrice, quotaBuildTotal);
+        return new ParseOutcome(rows, candidates, rate.doubleValue(), message, "表三甲等", hasPrice,
+                quotaBuildTotal, fixedSegments);
     }
 
     /** 表三甲：定额子目工程量（定额编号 / 项目名称 / 单位 / 数量 / 合计工日） */
@@ -207,7 +209,8 @@ public class BoqExcelParser {
      * 取不到才用工费公式的输入列自行重算：
      * 工费 = 敷设工费单价×折扣系数×长度 + 其他费×长度 + 熔接测试单价×熔接芯数。
      */
-    private java.util.Map<String, BigDecimal[]> parseFixedPriceSheet(List<List<String>> rows, Workbook wb) {
+    private java.util.Map<String, BigDecimal[]> parseFixedPriceSheet(List<List<String>> rows, Workbook wb,
+                                                                     List<FixedSegment> segments) {
         int header = -1;
         for (int i = 0; i < Math.min(12, rows.size()); i++) {
             String joined = String.join(" ", rows.get(i));
@@ -234,6 +237,10 @@ public class BoqExcelParser {
             }
             // 「合计金额」行没有芯数/长度，跳过；优先用表内已算好的工费合计（数值模板）
             BigDecimal amount = plainAmount(ExcelUtil.cell(row, 11));
+            BigDecimal resolvedFuseRate = plainAmount(ExcelUtil.cell(row, 10));
+            if (resolvedFuseRate == null) {
+                resolvedFuseRate = fuseRateByCore.get(core.intValue());
+            }
             if (amount == null) {
                 if (fee == null) {
                     continue;
@@ -245,19 +252,19 @@ public class BoqExcelParser {
                 if (otherFee == null) {
                     otherFee = defaultOtherFee(core);
                 }
-                BigDecimal fuseRate = plainAmount(ExcelUtil.cell(row, 10));
-                if (fuseRate == null) {
-                    fuseRate = fuseRateByCore.get(core.intValue());
-                }
-                if (fuseRate == null) {
-                    fuseRate = fuseCores == null || fuseCores.compareTo(BigDecimal.ZERO) == 0
+                if (resolvedFuseRate == null) {
+                    resolvedFuseRate = fuseCores == null || fuseCores.compareTo(BigDecimal.ZERO) == 0
                             ? BigDecimal.ZERO : estimateFuseRate(core);
                 }
                 amount = fee.multiply(discount).multiply(len)
                         .add(otherFee.multiply(len))
-                        .add(fuseRate.multiply(fuseCores == null ? BigDecimal.ZERO : fuseCores));
+                        .add(resolvedFuseRate.multiply(fuseCores == null ? BigDecimal.ZERO : fuseCores));
             }
             amount = amount.setScale(2, RoundingMode.HALF_UP);
+            if (segments != null) {
+                segments.add(new FixedSegment(i + 1, ExcelUtil.cell(row, 3), core, len,
+                        fee, discount, ExcelUtil.cell(row, 7), fuseCores, resolvedFuseRate, amount));
+            }
             String key = core.stripTrailingZeros().toPlainString();
             BigDecimal[] bucket = agg.computeIfAbsent(key, k -> new BigDecimal[]{
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
@@ -698,13 +705,26 @@ public class BoqExcelParser {
                       BigDecimal totalPrice) {
     }
 
+    /** 表七逐段明细：段落名 + 计价要素，供 B4 重复计费识别与前端列表展示 */
+    public record FixedSegment(Integer rowNo, String segmentName, BigDecimal coreCount, BigDecimal length,
+                               BigDecimal feeRate, BigDecimal discount, String otherFeeRaw,
+                               BigDecimal fuseCores, BigDecimal fuseRate, BigDecimal amount) {
+    }
+
     public record ParseOutcome(List<Row> rows, int candidateRows, double parseRate, String message,
-                               String sheetName, boolean hasPrice, BigDecimal quotaBuildTotal) {
+                               String sheetName, boolean hasPrice, BigDecimal quotaBuildTotal,
+                               List<FixedSegment> fixedSegments) {
+
+        /** 兼容旧 7 参构造 */
+        public ParseOutcome(List<Row> rows, int candidateRows, double parseRate, String message,
+                            String sheetName, boolean hasPrice, BigDecimal quotaBuildTotal) {
+            this(rows, candidateRows, parseRate, message, sheetName, hasPrice, quotaBuildTotal, List.of());
+        }
 
         /** 兼容旧 6 参构造 */
         public ParseOutcome(List<Row> rows, int candidateRows, double parseRate, String message,
                             String sheetName, boolean hasPrice) {
-            this(rows, candidateRows, parseRate, message, sheetName, hasPrice, null);
+            this(rows, candidateRows, parseRate, message, sheetName, hasPrice, null, List.of());
         }
 
         public String summary() {

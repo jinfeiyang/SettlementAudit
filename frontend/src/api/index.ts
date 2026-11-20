@@ -96,6 +96,21 @@ export interface BoqItemVO {
   matchLevel?: number
 }
 
+/** 表七光缆施工基准价逐段明细（B4 重复计费数据源） */
+export interface FixedSegmentVO {
+  id: number
+  rowNo?: number
+  segmentName?: string
+  coreCount?: number
+  length?: number
+  amount?: number
+  dedupKey?: string
+  /** 0 无重复；>0 同组为疑似重复段 */
+  dupGroup: number
+  /** REVERSED 起止点反转 / SIMILAR 名称高度相似 */
+  dupType?: string
+}
+
 /** 手工匹配结论：MATCH 指定图纸材料 / UNMATCH 取消匹配 */
 export interface MatchOverrideVO {
   boqItemId: number
@@ -236,6 +251,9 @@ export const boqApi = {
   byRow: (projectId: number, rowNo: number) =>
     request.get<BoqItemVO | null>(`/projects/${projectId}/boq/row/${rowNo}`),
   clear: (projectId: number) => request.delete<void>(`/projects/${projectId}/boq`),
+  /** 表七光缆施工基准价逐段明细（含重复段标记） */
+  fixedSegments: (projectId: number) =>
+    request.get<FixedSegmentVO[]>(`/projects/${projectId}/boq/fixed-segments`),
   /** 清单行的人工图纸匹配结论 */
   drawingMatches: (projectId: number) =>
     request.get<MatchOverrideVO[]>(`/projects/${projectId}/boq/drawing-matches`),

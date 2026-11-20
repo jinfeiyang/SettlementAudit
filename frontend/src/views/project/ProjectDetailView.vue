@@ -42,6 +42,15 @@
       <el-tab-pane :label="`资料与解析 (${overview?.fileCount ?? 0})`" name="files">
         <FilePanel :project-id="numberId" @changed="refreshOverview" @go="tab = $event" />
       </el-tab-pane>
+      <el-tab-pane :label="`施工光缆 (${cableCount})`" name="construction-cable">
+        <ConstructionCablePanel
+          :project-id="numberId"
+          :refresh-key="dataVersion"
+          @count="cableCount = $event"
+          @locate-boq="onLocate"
+          @go-boq="tab = 'boq'"
+        />
+      </el-tab-pane>
       <el-tab-pane :label="`工程量清单 (${overview?.boqCount ?? 0})`" name="boq">
         <BoqPanel
           :project-id="numberId"
@@ -88,6 +97,7 @@ import { datetime, money, statusTag } from '@/utils/format'
 import OverviewPanel from './components/OverviewPanel.vue'
 import FilePanel from './components/FilePanel.vue'
 import BoqPanel from './components/BoqPanel.vue'
+import ConstructionCablePanel from './components/ConstructionCablePanel.vue'
 import DrawingBoqPanel from './components/DrawingBoqPanel.vue'
 import IssuePanel from './components/IssuePanel.vue'
 import ReportPanel from './components/ReportPanel.vue'
@@ -102,6 +112,8 @@ const project = ref<ProjectVO>()
 const overview = ref<Overview>()
 const tab = ref<string>('overview')
 const highlightRow = ref<number>()
+/** 施工光缆段数（由面板异步加载后回传，用于 Tab 标题） */
+const cableCount = ref(0)
 /** 图纸清单行数（由面板异步汇总后回传，用于 Tab 标题） */
 const drawingCount = ref(0)
 /** 核查/生成报告完成后自增，通知已挂载的 Tab 面板重新取数（Tab 不销毁，不会重新 onMounted） */

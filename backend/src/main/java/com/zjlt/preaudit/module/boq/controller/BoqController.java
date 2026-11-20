@@ -49,6 +49,12 @@ public class BoqController {
         return R.ok(boqService.getByRow(projectId, rowNo));
     }
 
+    @Operation(summary = "表七光缆施工基准价逐段明细（含重复段标记）")
+    @GetMapping("/fixed-segments")
+    public R<List<BoqDtos.FixedSegmentVO>> fixedSegments(@PathVariable Long projectId) {
+        return R.ok(boqService.listFixedSegments(projectId));
+    }
+
     @Operation(summary = "清单行的人工图纸匹配结论")
     @GetMapping("/drawing-matches")
     public R<List<BoqDtos.MatchOverrideVO>> drawingMatches(@PathVariable Long projectId) {

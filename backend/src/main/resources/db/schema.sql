@@ -103,6 +103,31 @@ CREATE TABLE IF NOT EXISTS boq_drawing_match (
   KEY idx_project_item (project_id, boq_item_id)
 ) COMMENT '清单与图纸材料的人工匹配';
 
+-- 3.2 表七光缆施工基准价逐段明细（B4 重复计费识别的数据源）
+CREATE TABLE IF NOT EXISTS boq_fixed_segment (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  project_id BIGINT NOT NULL,
+  source_file_id BIGINT COMMENT '来源清单文件',
+  row_no INT COMMENT '表七原始行号',
+  segment_name VARCHAR(500) COMMENT '段落名称原文（如「黄岩朱砂街红三路1-黄岩朱砂街红三路2」）',
+  core_count INT COMMENT '送审光缆芯数',
+  length DECIMAL(18,4) COMMENT '段长度（米）',
+  fee_rate DECIMAL(18,4) COMMENT '敷设工费单价',
+  discount DECIMAL(10,4) COMMENT '折扣系数',
+  other_fee DECIMAL(18,4) COMMENT '其他费单价（元/米）',
+  fuse_cores DECIMAL(18,4) COMMENT '熔接芯数',
+  fuse_rate DECIMAL(18,4) COMMENT '熔接测试单价',
+  amount DECIMAL(18,2) COMMENT '工费合计',
+  dedup_key VARCHAR(500) COMMENT '去重键：段落名规范化 + 起止点排序（反转同键）',
+  dup_group INT DEFAULT 0 COMMENT '重复组号：0 无重复，>0 同组为疑似重复段',
+  dup_type VARCHAR(16) COMMENT 'REVERSED 起止点反转 / SIMILAR 名称高度相似',
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_project (project_id),
+  KEY idx_dedup (project_id, dedup_key)
+) COMMENT '表七光缆施工基准价逐段明细';
+
 -- 4. 规则库（外置可配置，带版本与生效时间）
 CREATE TABLE IF NOT EXISTS rule_quota (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,

@@ -92,6 +92,31 @@ CREATE TABLE IF NOT EXISTS boq_drawing_match (
 );
 CREATE INDEX IF NOT EXISTS idx_boq_match_project ON boq_drawing_match(project_id, boq_item_id);
 
+-- 表七光缆施工基准价逐段明细（B4 重复计费识别的数据源）
+CREATE TABLE IF NOT EXISTS boq_fixed_segment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  source_file_id BIGINT,
+  row_no INT,
+  segment_name VARCHAR(500),
+  core_count INT,
+  length DECIMAL(18,4),
+  fee_rate DECIMAL(18,4),
+  discount DECIMAL(10,4),
+  other_fee DECIMAL(18,4),
+  fuse_cores DECIMAL(18,4),
+  fuse_rate DECIMAL(18,4),
+  amount DECIMAL(18,2),
+  dedup_key VARCHAR(500),
+  dup_group INT DEFAULT 0,
+  dup_type VARCHAR(16),
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_boq_fixed_project ON boq_fixed_segment(project_id, row_no);
+CREATE INDEX IF NOT EXISTS idx_boq_fixed_dedup ON boq_fixed_segment(project_id, dedup_key);
+
 CREATE TABLE IF NOT EXISTS rule_quota (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   quota_code VARCHAR(64) NOT NULL,
