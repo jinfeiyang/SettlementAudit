@@ -28,7 +28,13 @@
       </el-form-item>
     </el-form>
 
-    <el-table v-loading="loading" :data="rows" empty-text="暂无项目，点击右上角新建">
+    <el-table
+      ref="tableRef"
+      v-loading="loading"
+      :data="rows"
+      empty-text="暂无项目，点击右上角新建"
+      :height="tableHeight"
+    >
       <el-table-column prop="projectNo" label="项目编号" width="170" class-name="wrap-cell" />
       <el-table-column prop="projectName" label="项目名称" min-width="300" class-name="wrap-cell" />
       <el-table-column label="合同编号" width="240" class-name="nowrap-cell">
@@ -144,15 +150,19 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox, type FormInstance, type FormRules, type UploadFile } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules, type TableInstance, type UploadFile } from 'element-plus'
 import { projectApi, type ProjectVO } from '@/api'
 import { datetime, money, statusTag } from '@/utils/format'
+import { useTableHeight } from '@/utils/useTableHeight'
 
 const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
 const rows = ref<ProjectVO[]>([])
 const total = ref(0)
+/** 表格高度跟随窗口，50 条/页时也不会撑出可视区域 */
+const tableRef = ref<TableInstance>()
+const tableHeight = useTableHeight(tableRef)
 const dialogVisible = ref(false)
 const editing = ref(false)
 const editingId = ref<number>()

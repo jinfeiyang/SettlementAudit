@@ -79,6 +79,19 @@ CREATE TABLE IF NOT EXISTS boq_item (
 );
 CREATE INDEX IF NOT EXISTS idx_boq_project ON boq_item(project_id, row_no);
 
+-- 清单行与图纸材料的人工匹配结论（MATCH 指定材料 / UNMATCH 取消匹配）
+CREATE TABLE IF NOT EXISTS boq_drawing_match (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  boq_item_id BIGINT NOT NULL,
+  drawing_key VARCHAR(600),
+  manual_type VARCHAR(16) NOT NULL,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_boq_match_project ON boq_drawing_match(project_id, boq_item_id);
+
 CREATE TABLE IF NOT EXISTS rule_quota (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   quota_code VARCHAR(64) NOT NULL,

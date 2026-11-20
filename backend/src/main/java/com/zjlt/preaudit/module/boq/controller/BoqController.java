@@ -12,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -45,6 +47,27 @@ public class BoqController {
     @GetMapping("/row/{rowNo}")
     public R<BoqDtos.ItemVO> byRow(@PathVariable Long projectId, @PathVariable Integer rowNo) {
         return R.ok(boqService.getByRow(projectId, rowNo));
+    }
+
+    @Operation(summary = "清单行的人工图纸匹配结论")
+    @GetMapping("/drawing-matches")
+    public R<List<BoqDtos.MatchOverrideVO>> drawingMatches(@PathVariable Long projectId) {
+        return R.ok(boqService.listDrawingMatches(projectId));
+    }
+
+    @Operation(summary = "保存人工匹配（不传 drawingKey 表示取消匹配）")
+    @PostMapping("/drawing-matches")
+    public R<Void> saveDrawingMatch(@PathVariable Long projectId,
+                                    @RequestBody BoqDtos.MatchOverrideReq req) {
+        boqService.saveDrawingMatch(projectId, req);
+        return R.ok();
+    }
+
+    @Operation(summary = "恢复该清单行的自动匹配")
+    @DeleteMapping("/drawing-matches/{boqItemId}")
+    public R<Void> deleteDrawingMatch(@PathVariable Long projectId, @PathVariable Long boqItemId) {
+        boqService.deleteDrawingMatch(projectId, boqItemId);
+        return R.ok();
     }
 
     @Operation(summary = "清空清单与疑点")

@@ -36,7 +36,7 @@
       destroy-on-close
       append-to-body
     >
-      <div v-if="current || material || relatedSources.length > 1" class="preview-bar">
+      <div v-if="file" class="preview-bar">
         <div v-if="current || material" class="preview-head">
           <div v-if="current" class="head-title">
             {{ sourceLabel(current) }}<template v-if="current.title"> · {{ current.title }}</template>
@@ -46,30 +46,40 @@
             材料：{{ material }}<span v-if="spec" class="material-spec"> {{ spec }}</span>
           </div>
         </div>
-        <div v-if="relatedSources.length > 1" class="related-line">
-          <span class="related-label">关联图纸（共 {{ relatedSources.length }} 页）</span>
-          <el-button
-            v-for="src in relatedSources"
-            :key="`${src.fileId}-${src.frame}`"
-            size="small"
-            :type="isCurrent(src) ? 'danger' : 'default'"
-            :plain="isCurrent(src)"
-            :title="src.title || src.fileName"
-            @click="open(src)"
-          >
-            {{ sourceLabel(src) }}
+        <div class="related-line">
+          <el-button size="small" :type="overview ? 'primary' : 'default'" @click="showWhole">
+            全图
           </el-button>
+          <template v-if="relatedSources.length > 1">
+            <span class="related-label">关联图纸（共 {{ relatedSources.length }} 页）</span>
+            <el-button
+              v-for="src in relatedSources"
+              :key="`${src.fileId}-${src.frame}`"
+              size="small"
+              :type="isActiveSource(src) ? 'danger' : 'default'"
+              :plain="isActiveSource(src)"
+              :title="src.title || src.fileName"
+              @click="open(src)"
+            >
+              {{ sourceLabel(src) }}
+            </el-button>
+          </template>
         </div>
       </div>
       <DrawingViewer
         v-if="file"
+        ref="viewerRef"
         :key="file.id"
         :file-id="file.id"
         :file-name="file.fileName"
+        hide-page-bar
+        @page-change="onPageChange"
         :focus="focus"
         :highlight="highlight || material"
         :highlight-spec="spec"
         :highlight-fallback="highlight ? material : ''"
+        show-pages
+        :related-pages="relatedPageNos"
       />
     </el-dialog>
   </span>
@@ -112,7 +122,38 @@ const focus = ref<Bounds | null>(null)
 const current = ref<DrawingSource | null>(null)
 
 /** 这条材料/清单项出现的所有图页，预览顶部可直接切换定位 */
+const viewerRef = ref<InstanceType<typeof DrawingViewer>>()
+/** 预览当前显示的图页（null = 全图概览）；页码高亮统一按它判断，避免和全图状态不一致 */
+const activePage = ref<number | null>(null)
+const overview = computed(() => activePage.value === null)
+
+function showWhole() {
+  viewerRef.value?.showWhole()
+}
+
+function onPageChange(page: number | null) {
+  activePage.value = page
+}
+
+/** 关联图纸按钮是否就是当前显示的那一页 */
+function isActiveSource(src: DrawingSource) {
+  if (overview.value || src.fileId !== file.value?.id) {
+    return false
+  }
+  if (src.frame != null) {
+    return src.frame === activePage.value
+  }
+  return isCurrent(src)
+}
+
 const relatedSources = computed(() => props.sources)
+
+/** 当前文件里与这条材料相关的图页序号：页码标橙、全图中描边 */
+const relatedPageNos = computed(() =>
+  relatedSources.value
+    .filter((src) => src.frame !== null && (!file.value || src.fileId === file.value.id))
+    .map((src) => src.frame as number),
+)
 
 const currentLabel = computed(() =>
   current.value ? sourceLabel(current.value) : file.value && !props.sources.length ? '整张图' : '',
@@ -139,7 +180,11 @@ function open(source: DrawingSource) {
     file.value = { id: source.fileId, fileName: source.fileName }
   }
   current.value = source
-  focus.value = focusBoundsOf(source)
+  // 必须新建对象：focusBoundsOf 返回的是 sources 里同一个 bbox，
+  // 从全图/别的页切回这一页时引用没变，查看器就不会重新定位
+  const box = focusBoundsOf(source)
+  focus.value = box ? { ...box } : null
+  activePage.value = focus.value ? (source.frame ?? null) : null
   visible.value = true
 }
 
@@ -150,6 +195,7 @@ function openFile() {
   file.value = { id: props.fallback.fileId, fileName: props.fallback.fileName }
   current.value = null
   focus.value = null
+  activePage.value = null
   visible.value = true
 }
 </script>

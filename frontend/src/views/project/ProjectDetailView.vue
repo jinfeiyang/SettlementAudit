@@ -60,6 +60,8 @@
           :focus="drawingFocus"
           @go="tab = $event"
           @count="drawingCount = $event"
+          @changed="refreshOverview"
+          @locate-boq="onLocate"
         />
       </el-tab-pane>
       <el-tab-pane :label="`疑点复核 (${overview?.issueTotal ?? 0})`" name="issues">

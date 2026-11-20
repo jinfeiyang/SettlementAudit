@@ -96,6 +96,13 @@ export interface BoqItemVO {
   matchLevel?: number
 }
 
+/** 手工匹配结论：MATCH 指定图纸材料 / UNMATCH 取消匹配 */
+export interface MatchOverrideVO {
+  boqItemId: number
+  drawingKey?: string | null
+  manualType: 'MATCH' | 'UNMATCH'
+}
+
 export interface IssueVO {
   id: number
   projectId: number
@@ -229,6 +236,20 @@ export const boqApi = {
   byRow: (projectId: number, rowNo: number) =>
     request.get<BoqItemVO | null>(`/projects/${projectId}/boq/row/${rowNo}`),
   clear: (projectId: number) => request.delete<void>(`/projects/${projectId}/boq`),
+  /** 清单行的人工图纸匹配结论 */
+  drawingMatches: (projectId: number) =>
+    request.get<MatchOverrideVO[]>(`/projects/${projectId}/boq/drawing-matches`),
+  /** 保存人工匹配：manualType=UNMATCH 表示取消匹配 */
+  saveDrawingMatch: (
+    projectId: number,
+    boqItemId: number,
+    drawingKey?: string | null,
+    manualType: 'MATCH' | 'UNMATCH' = 'MATCH',
+  ) =>
+    request.post<void>(`/projects/${projectId}/boq/drawing-matches`, { boqItemId, drawingKey, manualType }),
+  /** 恢复自动匹配 */
+  resetDrawingMatch: (projectId: number, boqItemId: number) =>
+    request.delete<void>(`/projects/${projectId}/boq/drawing-matches/${boqItemId}`),
   template: (projectId: number) =>
     download(`/projects/${projectId}/boq/template`, '工程量清单导入模板.xlsx'),
 }

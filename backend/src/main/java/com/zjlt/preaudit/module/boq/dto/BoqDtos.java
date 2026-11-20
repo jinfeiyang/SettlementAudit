@@ -18,6 +18,14 @@ public final class BoqDtos {
                          Integer matchLevel) {
     }
 
+    /** 清单行与图纸材料的人工匹配结论：MATCH 指定材料，UNMATCH 取消匹配 */
+    public record MatchOverrideVO(Long boqItemId, String drawingKey, String manualType) {
+    }
+
+    /** 保存人工匹配：manualType 为 UNMATCH 时取消匹配，否则按 drawingKey 手工指定材料 */
+    public record MatchOverrideReq(Long boqItemId, String drawingKey, String manualType) {
+    }
+
     /** 导入结果：行数、可解析率、识别工程类型 */
     public record ImportResult(Long fileId, int rows, int imported, BigDecimal parseRate,
                                String engType, String engTypeName, String message) {

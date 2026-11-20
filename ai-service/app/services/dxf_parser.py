@@ -888,7 +888,11 @@ def _drawing_frames(doc) -> list[dict[str, Any]]:
         })
     if not frames:
         # 图纸没做成「图框」块，但图签直接画在模型空间时，按图签的图号识别页
-        return _title_block_frames(doc, texts)
+        frames = _title_block_frames(doc, texts)
+        if frames:
+            return frames
+        # 批量导出的图纸既没有图框块也不写图号：按页幅大小的矩形识别图页
+        return _page_rect_frames(doc, texts)
     frames.sort(key=lambda f: (-round(f["y"], 1), f["x"]))
     for index, frame in enumerate(frames):
         frame["no"] = index + 1
@@ -984,6 +988,95 @@ def _title_block_frames(doc, texts: list[tuple[float, float, str]]) -> list[dict
     frames.sort(key=lambda frame: (-round(frame["y"] / 20), frame["x"]))
     for index, frame in enumerate(frames):
         frame["no"] = index + 1
+    return frames
+
+
+# 页幅框的尺寸范围：A3/A4 按不同出图比例缩放后大致落在 250~1200 × 180~900 之间
+_PAGE_RECT_MIN_W, _PAGE_RECT_MAX_W = 250.0, 1200.0
+_PAGE_RECT_MIN_H, _PAGE_RECT_MAX_H = 180.0, 900.0
+_PAGE_RECT_MIN_RATIO, _PAGE_RECT_MAX_RATIO = 0.8, 2.2
+
+
+def _page_rect_frames(doc, texts: list[tuple[float, float, str]]) -> list[dict[str, Any]]:
+    """第三种画法：把每张图按页幅大小并排画在模型空间，不写图框、不写图号。
+
+    取闭合多段线里页幅大小、且框内有文字的矩形当图页；被别的矩形包住的
+    内框（标题栏、图例框）丢掉，只留整页外框。图号无从得知，按阅读顺序
+    编号（先上后下、同排从左到右），保证"第几张"能翻到对应位置。
+    """
+    texts = [item for item in texts if item[2]]
+    if len(texts) < 2:
+        return []
+    candidates: list[tuple[float, float, float, float]] = []
+    for entity in doc.modelspace().query("LWPOLYLINE"):
+        try:
+            if not entity.closed:
+                continue
+            points = list(entity.get_points("xy"))
+        except Exception:  # noqa: BLE001
+            continue
+        if len(points) < 4:
+            continue
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+        if not (_PAGE_RECT_MIN_W <= width <= _PAGE_RECT_MAX_W
+                and _PAGE_RECT_MIN_H <= height <= _PAGE_RECT_MAX_H
+                and _PAGE_RECT_MIN_RATIO <= width / height <= _PAGE_RECT_MAX_RATIO):
+            continue
+        candidates.append((min(xs), min(ys), max(xs), max(ys)))
+
+    def area(rect: tuple[float, float, float, float]) -> float:
+        return (rect[2] - rect[0]) * (rect[3] - rect[1])
+
+    def contains(outer: tuple[float, float, float, float],
+                 inner: tuple[float, float, float, float]) -> bool:
+        return (inner[0] >= outer[0] - 1 and inner[1] >= outer[1] - 1
+                and inner[2] <= outer[2] + 1 and inner[3] <= outer[3] + 1)
+
+    outers = [rect for rect in candidates
+              if not any(other is not rect and area(other) > area(rect) and contains(other, rect)
+                         for other in candidates)]
+    pages: list[tuple[float, float, float, float]] = []
+    for rect in outers:
+        if any(all(abs(rect[i] - page[i]) < 1 for i in range(4)) for page in pages):
+            continue
+        pages.append(rect)
+    # 框里一个文字都没有的多半是图例/线框，不当图页
+    pages = [rect for rect in pages
+             if any(rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3] for x, y, _ in texts)]
+    if len(pages) < 2:
+        return []
+    # 排页顺序按视觉阅读顺序：先上排后下排，同排从左到右。
+    # 不能按坐标分桶——同排页面的上下边会差几毫米，分桶会把一页挤到下一排去。
+    pages.sort(key=lambda rect: -rect[3])
+    rows: list[list[tuple[float, float, float, float]]] = []
+    for rect in pages:
+        center_y = (rect[1] + rect[3]) / 2
+        for row in rows:
+            ref = row[0]
+            if abs(center_y - (ref[1] + ref[3]) / 2) < (ref[3] - ref[1]) * 0.4:
+                row.append(rect)
+                break
+        else:
+            rows.append([rect])
+    rows.sort(key=lambda row: -max(rect[3] for rect in row))
+    pages = [rect for row in rows for rect in sorted(row, key=lambda rect: rect[0])]
+    frames: list[dict[str, Any]] = []
+    for index, rect in enumerate(pages):
+        frame = {
+            "x": (rect[0] + rect[2]) / 2,
+            "y": (rect[1] + rect[3]) / 2,
+            "minX": round(rect[0], 3),
+            "minY": round(rect[1], 3),
+            "maxX": round(rect[2], 3),
+            "maxY": round(rect[3], 3),
+            "no": index + 1,
+            "sheet": f"{index + 1:02d}",
+            "title": "",
+        }
+        frames.append(frame)
     return frames
 
 
@@ -1281,6 +1374,74 @@ def _tables_from_text(doc) -> list[dict[str, Any]]:
     return _text_tables(_layout_texts(doc.modelspace()))
 
 
+# 图上「工作量：光缆24芯：549米」这类文字标注：不是表格，但写明了材料和数量。
+# 一个 MTEXT 里多行用 \P 分隔，清洗后变成空格，所以按「名称：数量单位」逐个扫。
+_WORKLOAD_ITEM_RE = re.compile(
+    r"(?P<name>[^：:\s]{1,30})\s*[：:]\s*(?P<qty>\d+(?:\.\d+)?)\s*(?P<unit>[^\s\d：:，,。；;]{1,6})"
+)
+# 名称里的规格：安装24芯分纤箱 / 光缆24芯 / 安装48芯ODF子框
+_NAME_SPEC_RE = re.compile(r"(?P<spec>\d+(?:\.\d+)?)\s*芯")
+
+
+def _split_name_spec(name: str) -> tuple[str, str]:
+    """把「安装24芯分纤箱」拆成名称「安装分纤箱」+ 规格「24芯」，便于和清单逐项比对。"""
+    match = _NAME_SPEC_RE.search(name)
+    if not match:
+        return name, ""
+    base = (name[:match.start()] + name[match.end():]).strip(" -_/")
+    # 保留「24芯」整体：清单规格列写的就是 24芯，只留数字会对不上
+    return base or name, match.group(0).replace(" ", "")
+
+
+def _tables_from_workload(doc) -> list[dict[str, Any]]:
+    """画法三：图上的「工作量：光缆24芯：549米」文字标注（没有画表格的竣工图）。
+
+    每个含「工作量」的 MTEXT/TEXT 生成一张虚拟材料表，列统一为
+    材料名称 / 规格 / 单位 / 数量，后续归纳、图页归属与清单比对复用既有流程。
+    """
+    tables: list[dict[str, Any]] = []
+    for entity in doc.modelspace():
+        etype = entity.dxftype()
+        if etype not in ("TEXT", "MTEXT"):
+            continue
+        raw = entity.dxf.text if etype == "TEXT" else entity.text
+        if not raw or "工作量" not in raw:
+            continue
+        text = clean_annotation(raw)
+        rows: list[list[str]] = []
+        for match in _WORKLOAD_ITEM_RE.finditer(text):
+            name, spec = _split_name_spec(match.group("name"))
+            if not name:
+                continue
+            rows.append([name, spec, match.group("unit"), match.group("qty")])
+        if not rows:
+            continue
+        try:
+            point = entity.dxf.insert
+            pos = (float(point.x), float(point.y))
+        except Exception:  # noqa: BLE001
+            pos = None
+        # 标注本身的范围：图纸没有图框时靠它把预览定位到这段文字所在的图页
+        box: dict[str, float] = {}
+        try:
+            from ezdxf import bbox
+
+            extents = bbox.extents([entity])
+            if extents.has_data:
+                box = {"minX": round(extents.extmin.x, 3), "minY": round(extents.extmin.y, 3),
+                       "maxX": round(extents.extmax.x, 3), "maxY": round(extents.extmax.y, 3)}
+        except Exception:  # noqa: BLE001
+            box = {}
+        tables.append({
+            "columns": ["材料名称", "规格", "单位", "数量"],
+            "rows": rows,
+            "pos": pos,
+            "box": box,
+            "source": "workload",
+        })
+    return tables
+
+
 # 表格抽取器注册表：(key, 说明, 抽取函数)。
 # 不同设计院/不同软件导出的图纸画法各异，这里把"找表"拆成互不干扰的策略：
 # 每个抽取器只认一种画法、只返回候选表，合并/去重/排序/图框归属/编号统一在
@@ -1289,6 +1450,7 @@ def _tables_from_text(doc) -> list[dict[str, Any]]:
 TABLE_EXTRACTORS: tuple[tuple[str, str, Any], ...] = (
     ("block", "CAD 表格对象", _tables_from_blocks),
     ("text", "线框文字表格", _tables_from_text),
+    ("workload", "工作量文字标注", _tables_from_workload),
 )
 
 

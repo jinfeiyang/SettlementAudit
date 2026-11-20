@@ -30,7 +30,13 @@
           <el-button @click="ruleApi.quotaTemplate()">下载模板</el-button>
         </div>
 
-        <el-table v-loading="quotaLoading" :data="quotas" empty-text="暂无定额子目">
+        <el-table
+          ref="quotaTableRef"
+          v-loading="quotaLoading"
+          :data="quotas"
+          empty-text="暂无定额子目"
+          :height="quotaHeight"
+        >
           <el-table-column prop="quotaCode" label="定额编号" width="130" />
           <el-table-column prop="quotaName" label="定额名称" min-width="220" show-overflow-tooltip />
           <el-table-column prop="unit" label="单位" width="80" />
@@ -91,7 +97,13 @@
           <el-button @click="ruleApi.feeTemplate()">下载模板</el-button>
         </div>
 
-        <el-table v-loading="feeLoading" :data="fees" empty-text="暂无取费规则">
+        <el-table
+          ref="feeTableRef"
+          v-loading="feeLoading"
+          :data="fees"
+          empty-text="暂无取费规则"
+          :height="feeHeight"
+        >
           <el-table-column prop="feeCode" label="费用项编码" width="130" />
           <el-table-column prop="feeName" label="费用项名称" min-width="160" />
           <el-table-column prop="baseFormula" label="取费基数公式" min-width="160" />
@@ -216,11 +228,18 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
+import { ElMessage, ElMessageBox, type TableInstance, type UploadRequestOptions } from 'element-plus'
 import { ruleApi } from '@/api'
 import { decimalPercent, money } from '@/utils/format'
+import { useTableHeight } from '@/utils/useTableHeight'
 
 const tab = ref('quota')
+
+/** 表格高度跟随窗口，50 条/页时也不会撑出可视区域 */
+const quotaTableRef = ref<TableInstance>()
+const quotaHeight = useTableHeight(quotaTableRef)
+const feeTableRef = ref<TableInstance>()
+const feeHeight = useTableHeight(feeTableRef)
 
 const quotas = ref<any[]>([])
 const quotaTotal = ref(0)

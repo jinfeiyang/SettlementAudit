@@ -36,14 +36,14 @@
       empty-text="暂无图纸清单：请先在「资料与解析」上传并解析竣工图 DXF/DWG"
       :height="tableHeight"
     >
-      <el-table-column prop="name" label="图纸名称" width="300" class-name="wrap-cell" />
-      <el-table-column label="规格" width="200" align="center" class-name="wrap-cell">
+      <el-table-column prop="name" label="图纸名称" width="220" class-name="wrap-cell" />
+      <el-table-column label="规格" width="160" align="center" class-name="wrap-cell">
         <template #default="{ row }">{{ row.spec || '-' }}</template>
       </el-table-column>
-      <el-table-column label="图纸数量" width="200" align="center" class-name="num-cell">
+      <el-table-column label="图纸数量" width="140" align="center" class-name="num-cell">
         <template #default="{ row }">{{ qty(row.quantity) }}</template>
       </el-table-column>
-      <el-table-column prop="unit" label="单位" width="200" align="center" />
+      <el-table-column prop="unit" label="单位" width="90" align="center" />
       <el-table-column label="所在图页" width="180" align="center" class-name="wrap-cell">
         <template #default="{ row }">
           <DrawingJump
@@ -51,20 +51,35 @@
             :fallback="fallbackOf(row)"
             :material="row.name"
             :spec="row.spec"
-            show-title
           />
         </template>
       </el-table-column>
       <el-table-column label="匹配清单" min-width="220" align="center" class-name="wrap-cell">
         <template #default="{ row }">
           <template v-if="row.match">
+            <el-tag v-if="row.manual" type="primary" size="small" effect="dark">手动</el-tag>
             <el-tag :type="row.level === 1 ? 'success' : 'warning'" size="small" effect="plain">
               {{ row.level === 1 ? '名称一致' : '相似关联' }}
             </el-tag>
             <span v-if="row.level === 2" class="score">{{ row.score?.toFixed(2) }}</span>
             <div class="cmp-line">第 {{ row.match.rowNo }} 行 {{ row.match.itemName }}</div>
           </template>
-          <el-tag v-else type="danger" size="small" effect="plain">清单无此项</el-tag>
+          <template v-else>
+            <el-tag type="danger" size="small" effect="plain">清单无此项</el-tag>
+          </template>
+        </template>
+      </el-table-column>
+      <el-table-column label="匹配" width="140" align="center">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" @click="openMatch(row)">
+            {{ row.match ? '匹配' : '手动匹配' }}
+          </el-button>
+          <el-button v-if="row.match" link type="danger" size="small" @click="unmatchRow(row)">
+            取消匹配
+          </el-button>
+          <el-button v-if="overrideByKey.has(row.key)" link size="small" @click="autoMatchRow(row)">
+            恢复自动
+          </el-button>
         </template>
       </el-table-column>
       <el-table-column label="数量对比" width="180" align="center" class-name="wrap-cell">
@@ -81,6 +96,14 @@
           <span v-else class="muted">-</span>
         </template>
       </el-table-column>
+      <el-table-column label="操作" width="160" fixed="right" class-name="action-cell">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+          <el-button v-if="row.match" link type="primary" @click="locateBoq(row.match)">
+            工程量清单
+          </el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-pagination
@@ -93,24 +116,108 @@
       @current-change="(p: number) => (page = p)"
       @size-change="onSizeChange"
     />
+
+    <MatchDialog
+      v-model="matchVisible"
+      :title="matchRow ? `为「${matchRow.name}」选择清单行` : '选择清单行'"
+      :options="matchOptions"
+      :current="matchRow?.match ? String(matchRow.match.id) : undefined"
+      :can-unmatch="!!matchRow?.match"
+      :can-auto="!!currentOverride"
+      @confirm="confirmMatch"
+      @unmatch="matchRow && unmatchRow(matchRow)"
+      @auto="matchRow && autoMatchRow(matchRow)"
+    />
+
+    <el-dialog v-model="detailVisible" title="图纸材料详情" width="720px" align-center>
+      <template v-if="detailRow">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="图纸名称" :span="2">{{ detailRow.name }}</el-descriptions-item>
+          <el-descriptions-item label="规格">{{ detailRow.spec || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="单位">{{ detailRow.unit || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="图纸数量">
+            {{ qty(detailRow.quantity) }}{{ detailRow.unit || '' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="出现图纸">{{ detailRow.fileCount }} 张</el-descriptions-item>
+          <el-descriptions-item label="图纸文件" :span="2">
+            {{ detailRow.files.join('、') || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="所在图页" :span="2">
+            <DrawingJump
+              :sources="detailRow.sources"
+              :fallback="fallbackOf(detailRow)"
+              :material="detailRow.name"
+              :spec="detailRow.spec"
+              show-title
+            />
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <h4 class="section">匹配清单</h4>
+        <el-descriptions v-if="detailRow.match" :column="2" border size="small">
+          <el-descriptions-item label="匹配方式">
+            <el-tag v-if="detailRow.manual" type="primary" size="small" effect="dark">手动</el-tag>
+            <el-tag :type="detailRow.level === 1 ? 'success' : 'warning'" size="small" effect="plain">
+              {{ detailRow.level === 1 ? '名称一致' : '相似关联' }}
+            </el-tag>
+            <span v-if="detailRow.level === 2" class="score">
+              {{ detailRow.score?.toFixed(2) }}
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item label="清单行号">第 {{ detailRow.match.rowNo }} 行</el-descriptions-item>
+          <el-descriptions-item label="清单名称" :span="2">
+            {{ detailRow.match.itemName }}
+          </el-descriptions-item>
+          <el-descriptions-item label="规格 / 特征">
+            {{ detailRow.match.featureDesc || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="类别">{{ detailRow.match.itemTypeName || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="清单数量">
+            {{ qty(detailRow.match.quantity) }}{{ detailRow.match.unit || '' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="数量差异">
+            <span
+              v-if="detailRow.diffRate !== null && detailRow.diffRate !== undefined"
+              :class="['diff', detailRow.diffRate > 0 ? 'diff-more' : 'diff-less']"
+            >
+              {{ diffLabel(detailRow.diffRate) }}
+            </span>
+            <span v-else class="muted">单位不可换算，无法比较数量</span>
+          </el-descriptions-item>
+        </el-descriptions>
+        <el-empty v-else description="工程量清单中没有找到对应项" :image-size="56" />
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import type { TableInstance } from 'element-plus'
+import { ElMessage, type TableInstance } from 'element-plus'
 import { boqApi, projectApi, type BoqItemVO, type FileVO } from '@/api'
 import { useTableHeight } from '@/utils/useTableHeight'
 import DrawingJump from './DrawingJump.vue'
 import {
+  applyMatchOverrides,
   compareDrawingWithBoq,
   diffState,
+  matchScore,
   mergeDrawingMaterials,
   type DrawingFrameItem,
   type DrawingMaterial,
   type DrawingMaterialItem,
+  type DrawingRow,
   type DrawingTableItem,
+  type MatchOverride,
 } from './drawingCompare'
+import MatchDialog from './MatchDialog.vue'
+
+/** 匹配弹窗选项：value 为清单行 id */
+interface MatchOption {
+  value: string
+  label: string
+  desc?: string
+}
 
 /** refreshKey 由父组件在核查完成后自增，Tab 已挂载时也能重新拉取图纸与清单匹配 */
 const props = defineProps<{
@@ -119,7 +226,13 @@ const props = defineProps<{
   /** 从工程量清单跳转过来时要定位的图纸材料（seq 变化即重新定位同一行） */
   focus?: { key: string; seq: number }
 }>()
-const emit = defineEmits<{ (e: 'go', tab: string): void; (e: 'count', value: number): void }>()
+const emit = defineEmits<{
+  (e: 'go', tab: string): void
+  (e: 'count', value: number): void
+  (e: 'changed'): void
+  /** 跳到工程量清单并定位到这图纸材料匹配的清单行 */
+  (e: 'locate-boq', rowNo: number): void
+}>()
 
 const all = ref<BoqItemVO[]>([])
 const drawingMaterials = ref<DrawingMaterial[]>([])
@@ -140,7 +253,106 @@ const tableHeight = useTableHeight(tableRef)
 const page = ref(1)
 const size = ref(50)
 
-const comparisons = computed(() => compareDrawingWithBoq(drawingMaterials.value, all.value))
+/** 人工匹配结论：手工指定 / 手工取消，覆盖自动匹配 */
+const drawingOverrides = ref<MatchOverride[]>([])
+/** 图纸材料 key → 人工结论：图纸清单侧靠它判断这一行是否被手工改过 */
+const overrideByKey = computed(
+  () =>
+    new Map(
+      drawingOverrides.value
+        .filter((item) => item.drawingKey)
+        .map((item) => [item.drawingKey as string, item]),
+    ),
+)
+
+const comparisons = computed(() =>
+  applyMatchOverrides(
+    compareDrawingWithBoq(drawingMaterials.value, all.value),
+    all.value,
+    drawingOverrides.value,
+  ),
+)
+
+/** 手工匹配弹窗：为当前图纸材料挑选清单行 */
+const matchVisible = ref(false)
+const matchRow = ref<DrawingRow | null>(null)
+
+/** 图纸材料详情弹窗 */
+const detailVisible = ref(false)
+const detailRow = ref<DrawingRow | null>(null)
+
+function openDetail(row: DrawingRow) {
+  detailRow.value = row
+  detailVisible.value = true
+}
+const matchOptions = computed<MatchOption[]>(() => {
+  const material = matchRow.value
+  const candidates = all.value.filter((item) => item.itemType !== 'FEE' && item.itemType !== 'OTHER')
+  // 与当前图纸材料最符合的清单行排在最前面
+  if (material) {
+    candidates.sort((a, b) => matchScore(material, b) - matchScore(material, a))
+  }
+  return candidates.map((item) => ({
+    value: String(item.id),
+    label: `第 ${item.rowNo ?? '-'} 行 ${item.itemName}`,
+    desc: `${qty(item.quantity)}${item.unit || ''}${item.itemTypeName ? ' · ' + item.itemTypeName : ''}`,
+  }))
+})
+/** 当前行的人工结论（用于「恢复自动匹配」） */
+const currentOverride = computed(() =>
+  matchRow.value ? overrideByKey.value.get(matchRow.value.key) : undefined,
+)
+
+function openMatch(row: DrawingRow) {
+  matchRow.value = row
+  matchVisible.value = true
+}
+
+async function reloadOverrides() {
+  drawingOverrides.value = await boqApi.drawingMatches(props.projectId)
+}
+
+/** 跳到工程量清单并定位到这条图纸材料匹配的清单行 */
+function locateBoq(item?: BoqItemVO) {
+  if (item?.rowNo !== undefined) {
+    emit('locate-boq', item.rowNo)
+  }
+}
+
+async function confirmMatch(value: string) {
+  if (!matchRow.value) {
+    return
+  }
+  await boqApi.saveDrawingMatch(props.projectId, Number(value), matchRow.value.key, 'MATCH')
+  matchVisible.value = false
+  await reloadOverrides()
+  emit('changed')
+  ElMessage.success('已保存人工匹配')
+}
+
+/** 取消这条图纸材料的清单匹配 */
+async function unmatchRow(row: { key: string; match?: BoqItemVO }) {
+  if (!row.match) {
+    return
+  }
+  await boqApi.saveDrawingMatch(props.projectId, row.match.id, row.key, 'UNMATCH')
+  matchVisible.value = false
+  await reloadOverrides()
+  emit('changed')
+  ElMessage.success('已取消该图纸材料的清单匹配')
+}
+
+async function autoMatchRow(row: { key: string }) {
+  const override = overrideByKey.value.get(row.key)
+  if (!override) {
+    return
+  }
+  await boqApi.resetDrawingMatch(props.projectId, override.boqItemId)
+  matchVisible.value = false
+  await reloadOverrides()
+  emit('changed')
+  ElMessage.success('已恢复自动匹配')
+}
 
 const drawingView = computed(() => {
   let rows = comparisons.value.rows
@@ -287,7 +499,7 @@ function fallbackOf(row: DrawingMaterial) {
 }
 
 function refreshAll() {
-  return Promise.all([load(), loadDrawings()])
+  return Promise.all([load(), loadDrawings(), reloadOverrides()])
 }
 
 /** 重置查询条件并重新取数 */
@@ -320,6 +532,12 @@ onMounted(refreshAll)
 </script>
 
 <style scoped>
+.section {
+  margin: 14px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
 .toolbar {
   display: flex;
   align-items: center;
@@ -371,6 +589,10 @@ onMounted(refreshAll)
   line-height: 1.45;
 }
 :deep(.wrap-cell .cell) {
+  padding: 4px 8px;
+}
+:deep(.action-cell .cell) {
+  white-space: nowrap;
   padding: 4px 8px;
 }
 /* 从工程量清单跳转过来时闪两下，避免只翻页时用户找不到目标行 */

@@ -315,7 +315,7 @@
       top="5vh"
       destroy-on-close
     >
-      <DrawingViewer v-if="drawingFile" :file-id="drawingFile.id" :file-name="drawingFile.fileName" />
+      <DrawingViewer v-if="drawingFile" :file-id="drawingFile.id" :file-name="drawingFile.fileName" show-pages />
     </el-dialog>
   </div>
 </template>

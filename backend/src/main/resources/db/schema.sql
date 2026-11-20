@@ -90,6 +90,19 @@ CREATE TABLE IF NOT EXISTS boq_item (
   KEY idx_project_row (project_id, row_no)
 ) COMMENT '工程量清单项';
 
+-- 3.1 清单行与图纸材料的人工匹配结论（MATCH 指定材料 / UNMATCH 取消匹配）
+CREATE TABLE IF NOT EXISTS boq_drawing_match (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  project_id BIGINT NOT NULL,
+  boq_item_id BIGINT NOT NULL COMMENT '工程量清单行',
+  drawing_key VARCHAR(600) COMMENT '图纸材料键：名称|规格|单位',
+  manual_type VARCHAR(16) NOT NULL COMMENT 'MATCH 手动匹配 / UNMATCH 取消匹配',
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_project_item (project_id, boq_item_id)
+) COMMENT '清单与图纸材料的人工匹配';
+
 -- 4. 规则库（外置可配置，带版本与生效时间）
 CREATE TABLE IF NOT EXISTS rule_quota (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,

@@ -82,6 +82,7 @@
           <template #default="{ row }">
             <span v-if="isPricedExtraRow(row)" class="muted">-</span>
             <template v-else-if="row.drawing">
+              <el-tag v-if="row.drawing.manual" type="primary" size="small" effect="dark">手动</el-tag>
               <el-tag :type="row.drawing.level === 1 ? 'success' : 'warning'" size="small" effect="plain">
                 {{ row.drawing.level === 1 ? '名称一致' : '相似关联' }}
               </el-tag>
@@ -106,12 +107,35 @@
                 :spec="row.drawing.spec"
                 :highlight="row.itemType === 'QUOTA' ? row.itemName : ''"
               />
+              <div class="cmp-line match-ops">
+                <el-button link type="primary" size="small" @click="openMatch(row)">匹配</el-button>
+                <el-button link type="danger" size="small" @click="unmatchRow(row)">取消匹配</el-button>
+                <el-button
+                  v-if="overrideByBoqId.has(row.id)"
+                  link
+                  size="small"
+                  @click="autoMatchRow(row)"
+                >
+                  恢复自动
+                </el-button>
+              </div>
             </template>
             <span v-else-if="!drawingMaterials.length" class="muted">图纸清单为空</span>
             <template v-else>
               <el-tag type="danger" size="small" effect="plain">图纸无对应</el-tag>
               <div v-if="row.nearest" class="cmp-line muted">
                 最近候选 {{ row.nearest.row.name }}（{{ row.nearest.score.toFixed(2) }}）
+              </div>
+              <div class="cmp-line match-ops">
+                <el-button link type="primary" size="small" @click="openMatch(row)">手动匹配</el-button>
+                <el-button
+                  v-if="overrideByBoqId.has(row.id)"
+                  link
+                  size="small"
+                  @click="autoMatchRow(row)"
+                >
+                  恢复自动
+                </el-button>
               </div>
             </template>
           </template>
@@ -140,6 +164,18 @@
         :page-sizes="[20, 50, 100]"
         @current-change="(p: number) => (page = p)"
         @size-change="onSizeChange"
+      />
+
+      <MatchDialog
+        v-model="matchVisible"
+        :title="matchRow ? `为「${matchRow.itemName}」选择图纸材料` : '选择图纸材料'"
+        :options="matchOptions"
+        :current="matchRow ? comparisons.byBoqId.get(matchRow.id)?.key : undefined"
+        :can-unmatch="!!(matchRow && comparisons.byBoqId.get(matchRow.id))"
+        :can-auto="!!(matchRow && overrideByBoqId.has(matchRow.id))"
+        @confirm="confirmMatch"
+        @unmatch="matchRow && unmatchRow({ ...matchRow, drawing: comparisons.byBoqId.get(matchRow.id) })"
+        @auto="matchRow && autoMatchRow(matchRow)"
       />
     </section>
 
@@ -285,17 +321,28 @@ import {
   type DrawingCable,
 } from '@/utils/cableCheck'
 import {
+  applyMatchOverrides,
   compareDrawingWithBoq,
   diffState,
+  matchScore,
   mergeDrawingMaterials,
   type DrawingFrameItem,
   type DrawingMaterial,
   type DrawingMaterialItem,
   type DrawingRow,
   type DrawingTableItem,
+  type MatchOverride,
   type NearestMatch,
 } from './drawingCompare'
 import DrawingJump from './DrawingJump.vue'
+import MatchDialog from './MatchDialog.vue'
+
+/** 匹配弹窗选项：value 为图纸材料键 */
+interface MatchOption {
+  value: string
+  label: string
+  desc?: string
+}
 
 interface BoqRow extends BoqItemVO {
   /** 与清单行最贴近的图纸材料（无匹配时为 undefined） */
@@ -344,7 +391,75 @@ const drawingFileIds = ref<Record<string, number>>({})
 const detailVisible = ref(false)
 const detailRow = ref<BoqRow | null>(null)
 
-const comparisons = computed(() => compareDrawingWithBoq(drawingMaterials.value, all.value))
+/** 清单行的人工匹配结论（手工指定 / 手工取消），覆盖自动匹配 */
+const drawingOverrides = ref<MatchOverride[]>([])
+const overrideByBoqId = computed(
+  () => new Map(drawingOverrides.value.map((item) => [item.boqItemId, item])),
+)
+
+const comparisons = computed(() =>
+  applyMatchOverrides(
+    compareDrawingWithBoq(drawingMaterials.value, all.value),
+    all.value,
+    drawingOverrides.value,
+  ),
+)
+
+/** 手工匹配弹窗：为当前清单行挑选一条图纸材料 */
+const matchVisible = ref(false)
+const matchRow = ref<BoqItemVO | null>(null)
+const matchOptions = computed<MatchOption[]>(() => {
+  const target = matchRow.value
+  // 与当前清单行最符合的材料排在最前面，越往下越不相关
+  const ranked = [...comparisons.value.rows]
+  if (target) {
+    ranked.sort((a, b) => matchScore(b, target) - matchScore(a, target))
+  }
+  return ranked.map((row) => ({
+    value: row.key,
+    label: `${row.name}${row.spec ? ' ' + row.spec : ''}`,
+    desc: `图纸 ${qty(row.quantity)}${row.unit || ''} · ${row.files.length} 张图纸${row.match ? ` · 已匹配清单第 ${row.match.rowNo} 行` : ''}`,
+  }))
+})
+
+function openMatch(row: BoqItemVO) {
+  matchRow.value = row
+  matchVisible.value = true
+}
+
+/** 保存人工匹配后重新取结论，页面立即刷新 */
+async function reloadOverrides() {
+  drawingOverrides.value = await boqApi.drawingMatches(props.projectId)
+}
+
+async function confirmMatch(key: string) {
+  if (!matchRow.value) {
+    return
+  }
+  await boqApi.saveDrawingMatch(props.projectId, matchRow.value.id, key, 'MATCH')
+  matchVisible.value = false
+  await reloadOverrides()
+  emit('changed')
+  ElMessage.success('已保存人工匹配')
+}
+
+/** 取消当前清单行的图纸匹配（不选材料，直接置为不关联） */
+async function unmatchRow(row: BoqRow) {
+  await boqApi.saveDrawingMatch(props.projectId, row.id, row.drawing?.key ?? null, 'UNMATCH')
+  matchVisible.value = false
+  await reloadOverrides()
+  emit('changed')
+  ElMessage.success('已取消该行的图纸匹配')
+}
+
+/** 恢复自动匹配 */
+async function autoMatchRow(row: BoqItemVO) {
+  await boqApi.resetDrawingMatch(props.projectId, row.id)
+  matchVisible.value = false
+  await reloadOverrides()
+  emit('changed')
+  ElMessage.success('已恢复自动匹配')
+}
 
 /**
  * 金额汇总分四段展示，避免混成一个「清单直接费」：
@@ -523,7 +638,7 @@ function fallbackOf(drawing: DrawingRow) {
 }
 
 async function refreshAll() {
-  await Promise.all([load(), loadDrawings()])
+  await Promise.all([load(), loadDrawings(), reloadOverrides()])
 }
 
 /** 重置查询条件并重新取数 */
@@ -666,6 +781,7 @@ watch([keyword, typeFilter, matchFilter, diffFilter, drawingUnmatchedOnly], () =
 })
 
 onMounted(() => {
+  reloadOverrides()
   load()
   loadDrawings()
 })
@@ -688,6 +804,11 @@ onMounted(() => {
   font-size: 11px;
   line-height: 1.4;
   word-break: break-all;
+}
+.match-ops {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
 }
 .diff {
   margin-left: 4px;

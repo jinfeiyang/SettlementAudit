@@ -7,7 +7,9 @@ import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.exception.BizException;
 import com.zjlt.preaudit.common.util.TextUtil;
 import com.zjlt.preaudit.module.boq.dto.BoqDtos;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingMatch;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMatchMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqItemMapper;
 import com.zjlt.preaudit.module.boq.parser.BoqExcelParser;
 import com.zjlt.preaudit.module.check.dto.CheckDtos;
@@ -43,6 +45,7 @@ import java.util.Map;
 public class BoqService {
 
     private final BoqItemMapper boqItemMapper;
+    private final BoqDrawingMatchMapper drawingMatchMapper;
     private final ProjectMapper projectMapper;
     private final RuleQuotaMapper ruleQuotaMapper;
     private final IssueMapper issueMapper;
@@ -292,8 +295,57 @@ public class BoqService {
 
     @Transactional
     public void clear(Long projectId) {
+        // 清单整体替换后行 id 全变，人工匹配结论一并清掉
+        drawingMatchMapper.delete(Wrappers.<BoqDrawingMatch>lambdaQuery()
+                .eq(BoqDrawingMatch::getProjectId, projectId));
         boqItemMapper.delete(Wrappers.<BoqItem>lambdaQuery().eq(BoqItem::getProjectId, projectId));
         issueMapper.delete(Wrappers.<Issue>lambdaQuery().eq(Issue::getProjectId, projectId));
+    }
+
+    /** 清单行的人工匹配结论（MATCH 指定图纸材料 / UNMATCH 取消匹配） */
+    public List<BoqDtos.MatchOverrideVO> listDrawingMatches(Long projectId) {
+        return drawingMatchMapper.selectList(Wrappers.<BoqDrawingMatch>lambdaQuery()
+                        .eq(BoqDrawingMatch::getProjectId, projectId))
+                .stream()
+                .map(m -> new BoqDtos.MatchOverrideVO(m.getBoqItemId(), m.getDrawingKey(), m.getManualType()))
+                .toList();
+    }
+
+    /** 保存人工匹配；drawingKey 为空表示手工取消匹配 */
+    @Transactional
+    public void saveDrawingMatch(Long projectId, BoqDtos.MatchOverrideReq req) {
+        if (req == null || req.boqItemId() == null) {
+            throw new BizException("缺少清单行");
+        }
+        BoqItem item = boqItemMapper.selectById(req.boqItemId());
+        if (item == null || !projectId.equals(item.getProjectId())) {
+            throw new BizException(404, "清单行不存在：" + req.boqItemId());
+        }
+        // 取消匹配时也保留材料键：图纸清单那边要靠它找回「这一行被谁取消了」
+        String key = StringUtils.hasText(req.drawingKey()) ? req.drawingKey().trim() : null;
+        boolean unmatch = "UNMATCH".equals(req.manualType());
+        BoqDrawingMatch exist = drawingMatchMapper.selectOne(Wrappers.<BoqDrawingMatch>lambdaQuery()
+                .eq(BoqDrawingMatch::getProjectId, projectId)
+                .eq(BoqDrawingMatch::getBoqItemId, req.boqItemId())
+                .last("LIMIT 1"));
+        BoqDrawingMatch target = exist == null ? new BoqDrawingMatch() : exist;
+        target.setProjectId(projectId);
+        target.setBoqItemId(req.boqItemId());
+        target.setDrawingKey(key);
+        target.setManualType(unmatch ? "UNMATCH" : "MATCH");
+        if (exist == null) {
+            drawingMatchMapper.insert(target);
+        } else {
+            drawingMatchMapper.updateById(target);
+        }
+    }
+
+    /** 恢复自动匹配 */
+    @Transactional
+    public void deleteDrawingMatch(Long projectId, Long boqItemId) {
+        drawingMatchMapper.delete(Wrappers.<BoqDrawingMatch>lambdaQuery()
+                .eq(BoqDrawingMatch::getProjectId, projectId)
+                .eq(BoqDrawingMatch::getBoqItemId, boqItemId));
     }
 
     public int count(Long projectId) {

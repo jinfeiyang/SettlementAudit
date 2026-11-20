@@ -30,10 +30,11 @@
     </div>
 
     <el-table
+      ref="tableRef"
       v-loading="loading"
       :data="rows"
       empty-text="暂无疑点，请先执行自动核查"
-      max-height="560"
+      :height="tableHeight"
       @selection-change="(val: any[]) => (selection = val)"
     >
       <el-table-column type="selection" width="44" />
@@ -126,9 +127,10 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, type TableInstance } from 'element-plus'
 import { issueApi, type IssueVO } from '@/api'
 import { levelTag, money } from '@/utils/format'
+import { useTableHeight } from '@/utils/useTableHeight'
 
 /** refreshKey 由父组件在核查完成后自增，用来触发列表重载（Tab 已挂载时不会重新 onMounted） */
 const props = defineProps<{ projectId: number; refreshKey?: number }>()
@@ -146,6 +148,9 @@ const typeOptions: Record<string, string> = {
 const rows = ref<IssueVO[]>([])
 const total = ref(0)
 const loading = ref(false)
+/** 表格高度跟随窗口，50 条/页时也不会撑出可视区域 */
+const tableRef = ref<TableInstance>()
+const tableHeight = useTableHeight(tableRef)
 const selection = ref<IssueVO[]>([])
 const detailVisible = ref(false)
 const current = ref<IssueVO>()

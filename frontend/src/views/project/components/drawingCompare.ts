@@ -101,6 +101,8 @@ export interface DrawingRow extends DrawingMaterial {
   diff?: number | null
   /** 差异率（%），以清单数量为基数 */
   diffRate?: number | null
+  /** 人工指定的匹配（区别于自动匹配） */
+  manual?: boolean
 }
 
 /** 未匹配清单行的最近候选，标出差距方便人工判断 */
@@ -318,6 +320,11 @@ function scorePair(material: DrawingMaterial, item: BoqItemVO): number {
   return Math.max(0, Math.min(1, score))
 }
 
+/** 手工匹配弹窗排序用：材料与清单行的匹配得分，越高越符合 */
+export function matchScore(material: DrawingMaterial, item: BoqItemVO): number {
+  return scorePair(material, item)
+}
+
 /**
  * 双向比对：每行图纸材料取分数最高的清单行，反过来记录每个清单行最贴近的图纸材料，
  * 两张表各自展示对侧的数量，便于人工按行核对。
@@ -347,21 +354,7 @@ export function compareDrawingWithBoq(materials: DrawingMaterial[], boqItems: Bo
     if (!hit || hit.score < MATCH_THRESHOLD) {
       return
     }
-    // 名称完全一致才算「名称一致」，其余都按「相似关联」提示人工确认
-    const sameName = normalizeText(row.name) === normalizeText(hit.item.itemName)
-    row.match = hit.item
-    row.score = sameName ? 1 : hit.score
-    row.level = sameName ? 1 : 2
-
-    const factor = unitFactor(hit.item.unit, row.unit)
-    if (factor === null) {
-      row.diff = null
-      row.diffRate = null
-    } else {
-      const boqQuantity = (hit.item.quantity ?? 0) * factor
-      row.diff = round(row.quantity - boqQuantity)
-      row.diffRate = boqQuantity === 0 ? null : round(((row.quantity - boqQuantity) / boqQuantity) * 100)
-    }
+    link(row, hit.item, hit.score)
 
     const previous = byBoqId.get(hit.item.id)
     if (!previous || (row.score ?? 0) > (previous.score ?? 0)) {
@@ -371,6 +364,90 @@ export function compareDrawingWithBoq(materials: DrawingMaterial[], boqItems: Bo
 
   const matched = rows.filter((row) => row.match).length
   return { rows, byBoqId, nearestByBoqId, matched, unmatched: rows.length - matched }
+}
+
+/** 把图纸材料行挂到清单行上，并计算数量差异（自动/手工匹配共用） */
+function link(row: DrawingRow, item: BoqItemVO, score: number) {
+  // 名称完全一致才算「名称一致」，其余都按「相似关联」提示人工确认
+  const sameName = normalizeText(row.name) === normalizeText(item.itemName)
+  row.match = item
+  row.score = sameName ? 1 : score
+  row.level = sameName ? 1 : 2
+
+  const factor = unitFactor(item.unit, row.unit)
+  if (factor === null) {
+    row.diff = null
+    row.diffRate = null
+  } else {
+    const boqQuantity = (item.quantity ?? 0) * factor
+    row.diff = round(row.quantity - boqQuantity)
+    row.diffRate = boqQuantity === 0 ? null : round(((row.quantity - boqQuantity) / boqQuantity) * 100)
+  }
+}
+
+/** 人工匹配结论：MATCH 指定图纸材料；UNMATCH 取消匹配（该清单行不再关联任何材料） */
+export interface MatchOverride {
+  boqItemId: number
+  drawingKey?: string | null
+  manualType: 'MATCH' | 'UNMATCH'
+}
+
+/**
+ * 在自动匹配结果上叠加人工结论：手工指定/取消的行以人工为准，其余保持自动结果。
+ * 手工匹配的材料本身如果原来挂在别的清单行上，那条关联一并撤掉，避免一张图对两行。
+ */
+export function applyMatchOverrides(
+  result: ComparisonResult,
+  boqItems: BoqItemVO[],
+  overrides: MatchOverride[],
+): ComparisonResult {
+  if (!overrides.length) {
+    return result
+  }
+  const itemById = new Map(boqItems.map((item) => [item.id, item]))
+  const rows = result.rows.map((row) => ({ ...row }))
+  const rowByKey = new Map(rows.map((row) => [row.key, row]))
+  const byBoqId = new Map(result.byBoqId)
+
+  const reset = (row: DrawingRow) => {
+    row.match = undefined
+    row.level = undefined
+    row.score = undefined
+    row.diff = null
+    row.diffRate = null
+    row.manual = false
+  }
+
+  overrides.forEach((override) => {
+    const item = itemById.get(override.boqItemId)
+    if (!item) {
+      return
+    }
+    const autoRow = byBoqId.get(item.id)
+    if (autoRow) {
+      const row = rowByKey.get(autoRow.key)
+      if (row) {
+        reset(row)
+      }
+    }
+    byBoqId.delete(item.id)
+    if (override.manualType !== 'MATCH' || !override.drawingKey) {
+      return
+    }
+    const row = rowByKey.get(override.drawingKey)
+    if (!row) {
+      return
+    }
+    if (row.match && row.match.id !== item.id) {
+      byBoqId.delete(row.match.id)
+    }
+    link(row, item, 1)
+    row.manual = true
+    byBoqId.set(item.id, row)
+  })
+
+  const matched = rows.filter((row) => row.match).length
+  return { rows, byBoqId, nearestByBoqId: result.nearestByBoqId, matched, unmatched: rows.length - matched }
 }
 
 /** 数量对比结论：一致 / 图纸偏大 / 图纸偏小 / 无法比较（单位不可换算） */

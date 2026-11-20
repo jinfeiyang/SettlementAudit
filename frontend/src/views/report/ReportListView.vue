@@ -19,7 +19,13 @@
       </div>
     </template>
 
-    <el-table v-loading="loading" :data="pagedReports" empty-text="暂无报告，可在项目作业页生成初稿">
+    <el-table
+      ref="tableRef"
+      v-loading="loading"
+      :data="pagedReports"
+      empty-text="暂无报告，可在项目作业页生成初稿"
+      :height="tableHeight"
+    >
       <el-table-column prop="projectName" label="项目" min-width="300" class-name="wrap-cell" />
       <el-table-column prop="title" label="报告标题" min-width="300" class-name="wrap-cell" />
       <el-table-column label="版本" width="80" align="center">
@@ -117,17 +123,21 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { projectApi, reportApi, type ProjectVO, type ReportContent, type ReportSection, type ReportVO } from '@/api'
 import { datetime, statusTag } from '@/utils/format'
 import { reportTextLines } from '@/utils/report'
 import { useAppStore } from '@/stores/app'
+import { useTableHeight } from '@/utils/useTableHeight'
 
 const store = useAppStore()
 const reports = ref<ReportVO[]>([])
 const projects = ref<ProjectVO[]>([])
 const projectId = ref<number>()
 const loading = ref(false)
+/** 表格高度跟随窗口，50 条/页时也不会撑出可视区域 */
+const tableRef = ref<TableInstance>()
+const tableHeight = useTableHeight(tableRef)
 const previewVisible = ref(false)
 const current = ref<ReportVO>()
 const sections = ref<ReportSection[]>([])

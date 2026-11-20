@@ -38,7 +38,13 @@
       </el-form-item>
     </el-form>
 
-    <el-table v-loading="loading" :data="rows" empty-text="无疑点数据">
+    <el-table
+      ref="tableRef"
+      v-loading="loading"
+      :data="rows"
+      empty-text="无疑点数据"
+      :height="tableHeight"
+    >
       <el-table-column label="级别" width="80">
         <template #default="{ row }">
           <el-tag :type="levelTag(row.level)" size="small" effect="dark">{{ row.levelName }}</el-tag>
@@ -88,9 +94,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, type TableInstance } from 'element-plus'
 import { issueApi, projectApi, type IssueVO, type ProjectVO } from '@/api'
 import { levelTag } from '@/utils/format'
+import { useTableHeight } from '@/utils/useTableHeight'
 
 const router = useRouter()
 const route = useRoute()
@@ -98,6 +105,9 @@ const rows = ref<IssueVO[]>([])
 const projects = ref<ProjectVO[]>([])
 const total = ref(0)
 const loading = ref(false)
+/** 表格高度跟随窗口，50 条/页时也不会撑出可视区域 */
+const tableRef = ref<TableInstance>()
+const tableHeight = useTableHeight(tableRef)
 
 const typeOptions: Record<string, string> = {
   QUOTA_MISMATCH: '定额套用',
