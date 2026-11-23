@@ -78,7 +78,7 @@
         <el-table-column label="来源表" width="120">
           <template #default="{ row }">{{ row.sourceSheet || '-' }}</template>
         </el-table-column>
-        <el-table-column label="图纸匹配" width="250">
+        <el-table-column label="图纸匹配" width="280">
           <template #default="{ row }">
             <span v-if="isPricedExtraRow(row)" class="muted">-</span>
             <template v-else-if="row.drawing">
@@ -95,7 +95,9 @@
                 图纸 {{ qty(row.drawing.quantity) }}{{ row.drawing.unit }}
                 <span
                   v-if="row.drawing.diffRate !== null && row.drawing.diffRate !== undefined"
-                  :class="['diff', row.drawing.diffRate > 0 ? 'diff-more' : 'diff-less']"
+                  :class="['diff', 'diff-clickable', row.drawing.diffRate > 0 ? 'diff-more' : 'diff-less']"
+                  title="点击跳转到图纸清单并定位对应材料"
+                  @click="emit('locate-drawing', row.drawing.key)"
                 >
                   {{ diffLabel(row.drawing.diffRate) }}
                 </span>
@@ -107,18 +109,6 @@
                 :spec="row.drawing.spec"
                 :highlight="row.itemType === 'QUOTA' ? row.itemName : ''"
               />
-              <div class="cmp-line match-ops">
-                <el-button link type="primary" size="small" @click="openMatch(row)">匹配</el-button>
-                <el-button link type="danger" size="small" @click="unmatchRow(row)">取消匹配</el-button>
-                <el-button
-                  v-if="overrideByBoqId.has(row.id)"
-                  link
-                  size="small"
-                  @click="autoMatchRow(row)"
-                >
-                  恢复自动
-                </el-button>
-              </div>
             </template>
             <span v-else-if="!drawingMaterials.length" class="muted">图纸清单为空</span>
             <template v-else>
@@ -126,31 +116,16 @@
               <div v-if="row.nearest" class="cmp-line muted">
                 最近候选 {{ row.nearest.row.name }}（{{ row.nearest.score.toFixed(2) }}）
               </div>
-              <div class="cmp-line match-ops">
-                <el-button link type="primary" size="small" @click="openMatch(row)">手动匹配</el-button>
-                <el-button
-                  v-if="overrideByBoqId.has(row.id)"
-                  link
-                  size="small"
-                  @click="autoMatchRow(row)"
-                >
-                  恢复自动
-                </el-button>
-              </div>
             </template>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right" class-name="action-cell">
+        <el-table-column label="操作" width="180" fixed="right" class-name="action-cell">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button
-              v-if="row.drawing"
-              link
-              type="primary"
-              @click="emit('locate-drawing', row.drawing.key)"
-            >
-              图纸清单
-            </el-button>
+            <template v-if="!isPricedExtraRow(row) && drawingMaterials.length">
+              <el-button v-if="row.drawing" link type="danger" @click="unmatchRow(row)">取消匹配</el-button>
+              <el-button v-else link type="primary" @click="openMatch(row)">手动匹配</el-button>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -172,10 +147,8 @@
         :options="matchOptions"
         :current="matchRow ? comparisons.byBoqId.get(matchRow.id)?.key : undefined"
         :can-unmatch="!!(matchRow && comparisons.byBoqId.get(matchRow.id))"
-        :can-auto="!!(matchRow && overrideByBoqId.has(matchRow.id))"
         @confirm="confirmMatch"
         @unmatch="matchRow && unmatchRow({ ...matchRow, drawing: comparisons.byBoqId.get(matchRow.id) })"
-        @auto="matchRow && autoMatchRow(matchRow)"
       />
     </section>
 
@@ -393,9 +366,6 @@ const detailRow = ref<BoqRow | null>(null)
 
 /** 清单行的人工匹配结论（手工指定 / 手工取消），覆盖自动匹配 */
 const drawingOverrides = ref<MatchOverride[]>([])
-const overrideByBoqId = computed(
-  () => new Map(drawingOverrides.value.map((item) => [item.boqItemId, item])),
-)
 
 const comparisons = computed(() =>
   applyMatchOverrides(
@@ -445,20 +415,20 @@ async function confirmMatch(key: string) {
 
 /** 取消当前清单行的图纸匹配（不选材料，直接置为不关联） */
 async function unmatchRow(row: BoqRow) {
+  try {
+    await ElMessageBox.confirm(
+      `确认取消第 ${row.rowNo} 行的图纸匹配？取消后该行将标记为不匹配，自动匹配结果会被人工结论覆盖。`,
+      '取消匹配确认',
+      { type: 'warning', confirmButtonText: '取消匹配', cancelButtonText: '返回' },
+    )
+  } catch {
+    return
+  }
   await boqApi.saveDrawingMatch(props.projectId, row.id, row.drawing?.key ?? null, 'UNMATCH')
   matchVisible.value = false
   await reloadOverrides()
   emit('changed')
   ElMessage.success('已取消该行的图纸匹配')
-}
-
-/** 恢复自动匹配 */
-async function autoMatchRow(row: BoqItemVO) {
-  await boqApi.resetDrawingMatch(props.projectId, row.id)
-  matchVisible.value = false
-  await reloadOverrides()
-  emit('changed')
-  ElMessage.success('已恢复自动匹配')
 }
 
 /**
@@ -796,13 +766,13 @@ onMounted(() => {
 }
 .mat-spec {
   color: #a8abb2;
-  font-size: 11px;
-  line-height: 1.3;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .cmp-line {
   color: #606266;
-  font-size: 11px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 1.5;
   word-break: break-all;
 }
 .match-ops {
@@ -812,13 +782,19 @@ onMounted(() => {
 }
 .diff {
   margin-left: 4px;
-  font-size: 11px;
+  font-size: 13px;
 }
 .diff-more {
   color: #f56c6c;
 }
 .diff-less {
   color: #e6a23c;
+}
+.diff-clickable {
+  cursor: pointer;
+}
+.diff-clickable:hover {
+  text-decoration: underline;
 }
 /* 光缆长度：清单少于图纸用红色强调，通过用绿色 */
 .cable-less {
@@ -867,7 +843,7 @@ onMounted(() => {
 .score {
   margin-left: 4px;
   color: #909399;
-  font-size: 11px;
+  font-size: 12px;
 }
 .section {
   margin: 14px 0 8px;
@@ -920,10 +896,13 @@ onMounted(() => {
 :deep(.wrap-cell .cell) {
   padding: 4px 8px;
 }
-/* 操作列按钮不换行，整行展示 */
+/* 操作列按钮允许换行，避免多个按钮被截断成省略号 */
 :deep(.action-cell .cell) {
-  white-space: nowrap;
+  white-space: normal;
   padding: 4px 8px;
+}
+:deep(.action-cell .el-button + .el-button) {
+  margin-left: 0;
 }
 
 </style>

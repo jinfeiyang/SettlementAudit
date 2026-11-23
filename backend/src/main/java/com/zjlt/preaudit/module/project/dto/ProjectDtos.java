@@ -15,6 +15,7 @@ public final class ProjectDtos {
 
     public record SaveReq(String projectNo,
                           @NotBlank(message = "项目名称不能为空") String projectName,
+                          String projectManager,
                           String engType,
                           String contractNo,
                           String orderNo,
@@ -26,7 +27,8 @@ public final class ProjectDtos {
                           String remark) {
     }
 
-    public record ProjectVO(Long id, String projectNo, String projectName, String engType, String engTypeName,
+    public record ProjectVO(Long id, String projectNo, String projectName, String projectManager,
+                            String engType, String engTypeName,
                             String contractNo, String orderNo, String builderUnit, String supervisorUnit,
                             BigDecimal constructionFee,
                             String city, BigDecimal settleAmount, String status, String statusName, String remark,

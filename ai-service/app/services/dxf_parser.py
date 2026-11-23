@@ -1553,6 +1553,10 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
     annotations: list[str] = []
     length_labels: list[dict[str, Any]] = []
     length_totals: list[dict[str, Any]] = []
+    # 全部文字标注（含坐标）：施工光缆段落名回查图纸页用。限条数避免 parse_result 过大；
+    # 图框归属在 frames 算出来后统一补，这里先记原始位置和图层。
+    text_labels: list[dict[str, Any]] = []
+    text_label_limit = 20000
     total_entities = 0
     total_length = 0.0
 
@@ -1564,6 +1568,9 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
                 continue
             if len(annotations) < sample_limit:
                 annotations.append(clean)
+            if len(text_labels) < text_label_limit:
+                text_labels.append({"text": clean[:200], "x": round(x, 3), "y": round(y, 3),
+                                    "layer": layer})
             segments, totals = parse_length_labels(clean)
             for value, kind, is_int in segments:
                 if len(length_labels) < 5000:
@@ -1640,6 +1647,25 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
     frames = _drawing_frames(doc)
     table_hits: dict[str, int] = {}
     materials = extract_material_tables(doc, table_hits, frames)
+
+    # 给文字标注补上图框/张号/图名和该页范围：施工光缆段落名据此回查「画在哪一页」并跳转定位。
+    frames_by_no = {frame["no"]: frame for frame in frames}
+    text_label_output: list[dict[str, Any]] = []
+    for label in text_labels:
+        frame_no = _frame_no_of((label["x"], label["y"]), frames)
+        frame = frames_by_no.get(frame_no)
+        text_label_output.append({
+            "text": label["text"],
+            "x": label["x"],
+            "y": label["y"],
+            "layer": label["layer"],
+            "frame": frame_no,
+            "sheet": frame.get("sheet") if frame else None,
+            "title": frame.get("title") if frame else None,
+            "bbox": ({"minX": round(frame["minX"], 3), "minY": round(frame["minY"], 3),
+                      "maxX": round(frame["maxX"], 3), "maxY": round(frame["maxY"], 3)}
+                     if frame else None),
+        })
 
     # 标注段长合计：图纸没画线缆图层时的长度来源（标注一般直接写米）。
     # 按「张」归组后再合计：合计行、分段、材料表里的光缆数量要能对上同一张图。
@@ -1752,6 +1778,8 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
                    for frame in frames[:200]],
         "materials": materials,
         "materialSummary": material_summary,
+        # 全部文字标注（含坐标/图框），施工光缆段落名据此回查图纸页并定位
+        "textLabels": text_label_output,
         "projectInfo": project_info,
         "materialDiagnostics": {"sources": table_sources, "tableCount": len(materials)},
         "entities": entities_sample,

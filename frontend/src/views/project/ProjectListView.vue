@@ -22,6 +22,11 @@
           <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
       </el-form-item>
+      <el-form-item label="项目经理">
+        <el-select v-model="query.projectManager" placeholder="全部" clearable filterable style="width: 160px">
+          <el-option v-for="m in managerOptions" :key="m" :label="m" :value="m" />
+        </el-select>
+      </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="reload">查询</el-button>
         <el-button @click="reset">重置</el-button>
@@ -37,6 +42,9 @@
     >
       <el-table-column prop="projectNo" label="项目编号" width="170" class-name="wrap-cell" />
       <el-table-column prop="projectName" label="项目名称" min-width="300" class-name="wrap-cell" />
+      <el-table-column label="项目经理" width="120">
+        <template #default="{ row }">{{ row.projectManager || '-' }}</template>
+      </el-table-column>
       <el-table-column label="合同编号" width="240" class-name="nowrap-cell">
         <template #default="{ row }">{{ row.contractNo || '-' }}</template>
       </el-table-column>
@@ -106,6 +114,9 @@
       <el-form-item label="项目名称" prop="projectName">
         <el-input v-model="form.projectName" placeholder="如：XX 市 XX 段光缆线路工程" />
       </el-form-item>
+      <el-form-item label="项目经理">
+        <el-input v-model="form.projectManager" placeholder="选填" />
+      </el-form-item>
       <el-form-item label="项目编号">
         <el-input
           v-model="form.projectNo"
@@ -148,7 +159,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules, type TableInstance, type UploadFile } from 'element-plus'
 import { projectApi, type ProjectVO } from '@/api'
@@ -249,10 +260,14 @@ const statusOptions = [
   { value: 'ARCHIVED', label: '已归档' },
 ]
 
-const query = reactive({ keyword: '', status: '', page: 1, size: 10 })
+const query = reactive({ keyword: '', status: '', projectManager: '', page: 1, size: 10 })
+/** 项目经理筛选项：从已加载的项目里提取，避免维护固定名单 */
+const managerOptions = computed(() =>
+  [...new Set(rows.value.map((r) => r.projectManager).filter((m): m is string => !!m))].sort())
 // 工程类型页面暂不展示，仍按 LINE 提交，保证后端校验与字典展示有值
 const form = reactive<any>({
   projectName: '',
+  projectManager: '',
   projectNo: '',
   engType: 'LINE',
   contractNo: '',
@@ -283,6 +298,7 @@ async function reload() {
 function reset() {
   query.keyword = ''
   query.status = ''
+  query.projectManager = ''
   query.page = 1
   reload()
 }
@@ -304,6 +320,7 @@ function openCreate() {
   guessNote.value = ''
   Object.assign(form, {
     projectName: '',
+    projectManager: '',
     projectNo: '',
     engType: 'LINE',
     contractNo: '',
@@ -323,6 +340,7 @@ function openEdit(row: ProjectVO) {
   editingId.value = row.id
   Object.assign(form, {
     projectName: row.projectName,
+    projectManager: row.projectManager || '',
     projectNo: row.projectNo,
     engType: row.engType || 'LINE',
     contractNo: row.contractNo || '',

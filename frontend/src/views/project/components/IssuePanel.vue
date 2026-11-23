@@ -80,7 +80,7 @@
       @size-change="onSizeChange"
     />
 
-    <el-drawer v-model="detailVisible" :title="current?.title || '疑点详情'" size="46%">
+    <el-dialog v-model="detailVisible" :title="current?.title || '疑点详情'" width="70%" align-center>
       <template v-if="current">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="级别">
@@ -121,7 +121,7 @@
           <el-button @click="locate(current)">回溯定位清单行</el-button>
         </div>
       </template>
-    </el-drawer>
+    </el-dialog>
   </div>
 </template>
 

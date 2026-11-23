@@ -121,6 +121,113 @@ export interface ComparisonResult {
   unmatched: number
 }
 
+/** 一张已解析图纸的文字标注索引（施工光缆段落名回查图纸页用） */
+export interface DrawingLabelDoc {
+  fileId: number
+  fileName: string
+  labels: import('@/api').DrawingTextLabel[]
+}
+
+/** 段落名命中的图纸来源：载着页码/图名/坐标，直接交给 DrawingJump 定位 */
+export interface SegmentDrawingHit {
+  source: DrawingSource
+  /** 命中的图纸标注原文，便于核对是不是这一段 */
+  matched: string[]
+}
+
+/**
+ * 用施工光缆段落名（如「玉环玉城街道外环西路.GJ327-玉环新供电局大楼.GJ276」）在图纸文字标注里回查所在页。
+ *
+ * 图纸上通常把整段名或它的某一端印成一条标注，所以只做「长文本之间」的正向包含：
+ * 标注与段名相同、标注是段名的一段、或段名是标注的一段，且参与比较的文本至少 8 字。
+ * 绝不能用「短标注 ⊂ 端点」的反向匹配——图纸里满屏的「1」「2」数字标注会命中所有段，
+ * 造成每段都关联几十页的假阳性。
+ * 有整段名命中的页时只认这些页；结果按文件顺序 + 图框序号（第几张）排列。
+ */
+const SEGMENT_LABEL_MIN = 8
+
+export function findSegmentDrawingHits(
+  segmentName: string | undefined,
+  docs: DrawingLabelDoc[],
+): SegmentDrawingHit[] {
+  const name = normalizeText(segmentName)
+  if (!name) {
+    return []
+  }
+
+  const grouped = new Map<string, SegmentDrawingHit & { count: number; whole: boolean; docIndex: number }>()
+  const docOrder = new Map(docs.map((doc, index) => [doc.fileId, index]))
+  for (const doc of docs) {
+    for (const label of doc.labels) {
+      const text = normalizeText(label.text)
+      // 两端都要够长才比较，彻底排除「1」「2」「GJ」这类短标注
+      if (text.length < SEGMENT_LABEL_MIN || name.length < SEGMENT_LABEL_MIN) {
+        continue
+      }
+      const same = text === name
+      const contains = text.includes(name) || name.includes(text)
+      if (!same && !contains) {
+        continue
+      }
+      const frameKey = label.frame == null ? 'none' : String(label.frame)
+      const groupKey = `${doc.fileId}:${frameKey}`
+      const hit = grouped.get(groupKey)
+      if (hit) {
+        hit.count += 1
+        hit.whole = hit.whole || same
+        if (!hit.matched.includes(label.text)) {
+          hit.matched.push(label.text)
+        }
+        continue
+      }
+      grouped.set(groupKey, {
+        source: {
+          fileId: doc.fileId,
+          fileName: doc.fileName,
+          frame: label.frame,
+          sheet: label.sheet ?? null,
+          title: label.title ?? null,
+          bbox: label.bbox ?? null,
+          // 没画图框时退而用文字坐标构造一个小范围，跳转后能放大到段名所在处
+          tableBox: label.bbox
+            ? null
+            : { minX: label.x - 5, minY: label.y - 5, maxX: label.x + 5, maxY: label.y + 5 },
+          tables: [],
+        },
+        matched: [label.text],
+        count: 1,
+        whole: same,
+        docIndex: docOrder.get(doc.fileId) ?? 0,
+      })
+    }
+  }
+  const all = [...grouped.values()]
+  // 有整段名完全相等的页时只认这些页：端点地名会在多张图重复出现，
+  // 一旦图上印了完整段名，端点包含命中的页就是噪音，必须丢掉。
+  const exact = all.filter((hit) => hit.whole)
+  const picked = exact.length ? exact : all
+  // 按图纸页次序展示：先文件顺序，再图框序号（no 即「第几张」）；无图框的排最后
+  return picked
+    .sort((a, b) => {
+      if (a.docIndex !== b.docIndex) {
+        return a.docIndex - b.docIndex
+      }
+      const fa = a.source.frame
+      const fb = b.source.frame
+      if (fa == null && fb == null) {
+        return 0
+      }
+      if (fa == null) {
+        return 1
+      }
+      if (fb == null) {
+        return -1
+      }
+      return fa - fb
+    })
+    .map(({ source, matched }) => ({ source, matched }))
+}
+
 /** 低于该分数视为没对上，宁可显示「未匹配」也不乱配 */
 const MATCH_THRESHOLD = 0.6
 

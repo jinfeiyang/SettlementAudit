@@ -90,12 +90,16 @@ public class ProjectService {
         }
     }
 
-    public PageResult<ProjectDtos.ProjectVO> page(String keyword, String status, String engType, long page, long size) {
+    public PageResult<ProjectDtos.ProjectVO> page(String keyword, String status, String engType,
+                                                  String projectManager, long page, long size) {
         Page<Project> p = new Page<>(Math.max(1, page), Math.min(100, Math.max(1, size)));
         LambdaQueryWrapper<Project> w = Wrappers.<Project>lambdaQuery()
                 .eq(StringUtils.hasText(status), Project::getStatus, status)
                 .eq(StringUtils.hasText(engType), Project::getEngType, engType)
                 .orderByDesc(Project::getCreateTime);
+        if (StringUtils.hasText(projectManager)) {
+            w.eq(Project::getProjectManager, projectManager.trim());
+        }
         if (StringUtils.hasText(keyword)) {
             String kw = keyword.trim();
             w.and(q -> q.like(Project::getProjectName, kw).or().like(Project::getProjectNo, kw));
@@ -277,6 +281,7 @@ public class ProjectService {
 
     /** 工程背景信息（合同/订单编号、参建单位、施工费）统一在这里落库，空串按 null 存 */
     private void applyBusinessFields(Project project, ProjectDtos.SaveReq req) {
+        project.setProjectManager(blankToNull(req.projectManager()));
         project.setContractNo(blankToNull(req.contractNo()));
         project.setOrderNo(blankToNull(req.orderNo()));
         project.setBuilderUnit(blankToNull(req.builderUnit()));
@@ -292,8 +297,8 @@ public class ProjectService {
     }
 
     private ProjectDtos.ProjectVO toVO(Project p) {
-        return new ProjectDtos.ProjectVO(p.getId(), p.getProjectNo(), p.getProjectName(), p.getEngType(),
-                Dict.engType(p.getEngType()), p.getContractNo(), p.getOrderNo(), p.getBuilderUnit(),
+        return new ProjectDtos.ProjectVO(p.getId(), p.getProjectNo(), p.getProjectName(), p.getProjectManager(),
+                p.getEngType(), Dict.engType(p.getEngType()), p.getContractNo(), p.getOrderNo(), p.getBuilderUnit(),
                 p.getSupervisorUnit(), p.getConstructionFee(), p.getCity(), p.getSettleAmount(), p.getStatus(),
                 Dict.projectStatus(p.getStatus()), p.getRemark(), p.getCreateTime(), p.getUpdateTime());
     }

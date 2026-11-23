@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS proj_project (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   project_no VARCHAR(64) NOT NULL,
   project_name VARCHAR(255) NOT NULL,
+  project_manager VARCHAR(64),
   eng_type VARCHAR(32),
   contract_no VARCHAR(64),
   order_no VARCHAR(128),
@@ -221,6 +222,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 -- 增量升级：本地 H2 文件库已存在时，CREATE TABLE IF NOT EXISTS 不会补列，这里补一次
 ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS contract_no VARCHAR(64);
 ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS order_no VARCHAR(128);
+ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS project_manager VARCHAR(64);
 ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS builder_unit VARCHAR(255);
 ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS supervisor_unit VARCHAR(255);
 ALTER TABLE proj_project ADD COLUMN IF NOT EXISTS construction_fee DECIMAL(18,2);

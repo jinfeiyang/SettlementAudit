@@ -17,6 +17,8 @@ public class Project extends BaseEntity {
 
     private String projectNo;
     private String projectName;
+    /** 项目经理 */
+    private String projectManager;
     /** LINE 线路 / DEVICE 设备安装（页面暂不展示） */
     private String engType;
     /** 合同编号 */

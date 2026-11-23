@@ -34,9 +34,10 @@ public class ProjectController {
     public R<PageResult<ProjectDtos.ProjectVO>> page(@RequestParam(required = false) String keyword,
                                                      @RequestParam(required = false) String status,
                                                      @RequestParam(required = false) String engType,
+                                                     @RequestParam(required = false) String projectManager,
                                                      @RequestParam(defaultValue = "1") long page,
                                                      @RequestParam(defaultValue = "10") long size) {
-        return R.ok(projectService.page(keyword, status, engType, page, size));
+        return R.ok(projectService.page(keyword, status, engType, projectManager, page, size));
     }
 
     @Operation(summary = "新建项目")

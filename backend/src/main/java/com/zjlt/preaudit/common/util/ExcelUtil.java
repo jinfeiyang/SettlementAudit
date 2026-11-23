@@ -177,4 +177,25 @@ public final class ExcelUtil {
             throw new BizException("Excel 导出失败：" + e.getMessage());
         }
     }
+
+    /** 将 classpath 下的模板文件原样下载（保留多 sheet、格式与公式） */
+    public static void downloadResource(HttpServletResponse response, String resourcePath, String fileName) {
+        try (InputStream in = ExcelUtil.class.getClassLoader().getResourceAsStream(resourcePath)) {
+            if (in == null) {
+                throw new BizException("模板文件不存在：" + resourcePath);
+            }
+            String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
+            response.setContentType("application/vnd.ms-excel");
+            response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + encoded);
+            OutputStream out = response.getOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+            out.flush();
+        } catch (IOException e) {
+            throw new BizException("模板下载失败：" + e.getMessage());
+        }
+    }
 }

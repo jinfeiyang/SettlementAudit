@@ -69,26 +69,15 @@
           </template>
         </template>
       </el-table-column>
-      <el-table-column label="匹配" width="140" align="center">
-        <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openMatch(row)">
-            {{ row.match ? '匹配' : '手动匹配' }}
-          </el-button>
-          <el-button v-if="row.match" link type="danger" size="small" @click="unmatchRow(row)">
-            取消匹配
-          </el-button>
-          <el-button v-if="overrideByKey.has(row.key)" link size="small" @click="autoMatchRow(row)">
-            恢复自动
-          </el-button>
-        </template>
-      </el-table-column>
-      <el-table-column label="数量对比" width="180" align="center" class-name="wrap-cell">
+      <el-table-column label="数量对比" width="210" align="center" class-name="wrap-cell">
         <template #default="{ row }">
           <template v-if="row.match">
             <div class="cmp-line">清单 {{ qty(row.match.quantity) }}{{ row.match.unit || '' }}</div>
             <div
               v-if="row.diffRate !== null && row.diffRate !== undefined"
-              :class="['cmp-line', 'diff', row.diffRate > 0 ? 'diff-more' : 'diff-less']"
+              :class="['cmp-line', 'diff', 'diff-clickable', row.diffRate > 0 ? 'diff-more' : 'diff-less']"
+              title="点击跳转到工程量清单并定位对应行"
+              @click="locateBoq(row.match)"
             >
               {{ diffLabel(row.diffRate) }}
             </div>
@@ -96,12 +85,11 @@
           <span v-else class="muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right" class-name="action-cell">
+      <el-table-column label="操作" width="180" fixed="right" class-name="action-cell">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-          <el-button v-if="row.match" link type="primary" @click="locateBoq(row.match)">
-            工程量清单
-          </el-button>
+          <el-button v-if="row.match" link type="danger" @click="unmatchRow(row)">取消匹配</el-button>
+          <el-button v-else link type="primary" @click="openMatch(row)">手动匹配</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -123,10 +111,8 @@
       :options="matchOptions"
       :current="matchRow?.match ? String(matchRow.match.id) : undefined"
       :can-unmatch="!!matchRow?.match"
-      :can-auto="!!currentOverride"
       @confirm="confirmMatch"
       @unmatch="matchRow && unmatchRow(matchRow)"
-      @auto="matchRow && autoMatchRow(matchRow)"
     />
 
     <el-dialog v-model="detailVisible" title="图纸材料详情" width="720px" align-center>
@@ -193,7 +179,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ElMessage, type TableInstance } from 'element-plus'
+import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { boqApi, projectApi, type BoqItemVO, type FileVO } from '@/api'
 import { useTableHeight } from '@/utils/useTableHeight'
 import DrawingJump from './DrawingJump.vue'
@@ -255,15 +241,6 @@ const size = ref(50)
 
 /** 人工匹配结论：手工指定 / 手工取消，覆盖自动匹配 */
 const drawingOverrides = ref<MatchOverride[]>([])
-/** 图纸材料 key → 人工结论：图纸清单侧靠它判断这一行是否被手工改过 */
-const overrideByKey = computed(
-  () =>
-    new Map(
-      drawingOverrides.value
-        .filter((item) => item.drawingKey)
-        .map((item) => [item.drawingKey as string, item]),
-    ),
-)
 
 const comparisons = computed(() =>
   applyMatchOverrides(
@@ -298,11 +275,6 @@ const matchOptions = computed<MatchOption[]>(() => {
     desc: `${qty(item.quantity)}${item.unit || ''}${item.itemTypeName ? ' · ' + item.itemTypeName : ''}`,
   }))
 })
-/** 当前行的人工结论（用于「恢复自动匹配」） */
-const currentOverride = computed(() =>
-  matchRow.value ? overrideByKey.value.get(matchRow.value.key) : undefined,
-)
-
 function openMatch(row: DrawingRow) {
   matchRow.value = row
   matchVisible.value = true
@@ -335,23 +307,20 @@ async function unmatchRow(row: { key: string; match?: BoqItemVO }) {
   if (!row.match) {
     return
   }
+  try {
+    await ElMessageBox.confirm(
+      `确认取消「${row.match.itemName || `第 ${row.match.rowNo} 行`}」与该图纸材料的匹配？取消后自动匹配结果会被人工结论覆盖。`,
+      '取消匹配确认',
+      { type: 'warning', confirmButtonText: '取消匹配', cancelButtonText: '返回' },
+    )
+  } catch {
+    return
+  }
   await boqApi.saveDrawingMatch(props.projectId, row.match.id, row.key, 'UNMATCH')
   matchVisible.value = false
   await reloadOverrides()
   emit('changed')
   ElMessage.success('已取消该图纸材料的清单匹配')
-}
-
-async function autoMatchRow(row: { key: string }) {
-  const override = overrideByKey.value.get(row.key)
-  if (!override) {
-    return
-  }
-  await boqApi.resetDrawingMatch(props.projectId, override.boqItemId)
-  matchVisible.value = false
-  await reloadOverrides()
-  emit('changed')
-  ElMessage.success('已恢复自动匹配')
 }
 
 const drawingView = computed(() => {
@@ -552,13 +521,13 @@ onMounted(refreshAll)
 }
 .cmp-line {
   color: #606266;
-  font-size: 11px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 1.5;
   word-break: break-all;
 }
 .diff {
   margin-left: 4px;
-  font-size: 11px;
+  font-size: 13px;
 }
 .diff-more {
   color: #f56c6c;
@@ -566,10 +535,16 @@ onMounted(refreshAll)
 .diff-less {
   color: #e6a23c;
 }
+.diff-clickable {
+  cursor: pointer;
+}
+.diff-clickable:hover {
+  text-decoration: underline;
+}
 .score {
   margin-left: 4px;
   color: #909399;
-  font-size: 11px;
+  font-size: 12px;
 }
 .muted {
   color: #a8abb2;
@@ -592,8 +567,11 @@ onMounted(refreshAll)
   padding: 4px 8px;
 }
 :deep(.action-cell .cell) {
-  white-space: nowrap;
+  white-space: normal;
   padding: 4px 8px;
+}
+:deep(.action-cell .el-button + .el-button) {
+  margin-left: 0;
 }
 /* 从工程量清单跳转过来时闪两下，避免只翻页时用户找不到目标行 */
 :deep(.focus-row) {

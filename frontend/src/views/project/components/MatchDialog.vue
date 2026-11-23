@@ -25,7 +25,6 @@
     </el-scrollbar>
     <template #footer>
       <el-button v-if="canUnmatch" type="danger" plain @click="emit('unmatch')">取消匹配</el-button>
-      <el-button v-if="canAuto" @click="emit('auto')">恢复自动匹配</el-button>
       <el-button @click="emit('update:modelValue', false)">关闭</el-button>
       <el-button type="primary" :disabled="!picked" @click="picked && emit('confirm', picked)">
         确定匹配
@@ -51,15 +50,12 @@ const props = defineProps<{
   current?: string
   /** 是否展示「取消匹配」（当前已有匹配时） */
   canUnmatch?: boolean
-  /** 是否展示「恢复自动匹配」（存在人工结论时） */
-  canAuto?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
   (e: 'confirm', value: string): void
   (e: 'unmatch'): void
-  (e: 'auto'): void
 }>()
 
 const keyword = ref('')

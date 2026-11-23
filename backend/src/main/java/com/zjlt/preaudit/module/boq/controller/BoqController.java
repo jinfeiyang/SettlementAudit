@@ -83,10 +83,9 @@ public class BoqController {
         return R.ok();
     }
 
-    @Operation(summary = "下载清单导入模板")
+    @Operation(summary = "下载清单导入模板（联通决算全套表，已清空数据行）")
     @GetMapping("/template")
     public void template(HttpServletResponse response) {
-        ExcelUtil.writeToResponse(response, BoqService.templateName(), BoqService.templateSheet(),
-                BoqService.templateHeaders(), BoqService.templateRows());
+        ExcelUtil.downloadResource(response, "templates/工程量清单导入模板.xls", "工程量清单导入模板.xls");
     }
 }

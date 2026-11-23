@@ -19,6 +19,7 @@ export interface ProjectVO {
   id: number
   projectNo: string
   projectName: string
+  projectManager?: string
   engType?: string
   engTypeName?: string
   contractNo?: string
@@ -94,6 +95,21 @@ export interface BoqItemVO {
   matchQuotaName?: string
   matchScore?: number
   matchLevel?: number
+}
+
+/** 图纸上的一条文字标注（含坐标与所属图框），用于按段名回查图纸页 */
+export interface DrawingTextLabel {
+  text: string
+  x: number
+  y: number
+  layer?: string
+  /** 图框合成序号，未落入图框时为 null */
+  frame: number | null
+  /** 图签张号 / 图名 */
+  sheet?: string | null
+  title?: string | null
+  /** 该页（图框）范围，定位时用 */
+  bbox?: { minX: number; minY: number; maxX: number; maxY: number } | null
 }
 
 /** 表七光缆施工基准价逐段明细（B4 重复计费数据源） */
@@ -269,7 +285,7 @@ export const boqApi = {
   resetDrawingMatch: (projectId: number, boqItemId: number) =>
     request.delete<void>(`/projects/${projectId}/boq/drawing-matches/${boqItemId}`),
   template: (projectId: number) =>
-    download(`/projects/${projectId}/boq/template`, '工程量清单导入模板.xlsx'),
+    download(`/projects/${projectId}/boq/template`, '工程量清单导入模板.xls'),
 }
 
 export const checkApi = {

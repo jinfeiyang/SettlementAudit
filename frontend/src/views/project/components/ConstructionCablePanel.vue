@@ -32,7 +32,7 @@
         :title="boqByCore.get(stat.core) ? '点击跳转到清单对应的光缆行' : '清单无对应光缆行'"
         @click="goToCoreBoq(stat.core)"
       >
-        {{ stat.core }} 芯总长：<b>{{ qty(stat.length) }}</b> 米
+        {{ stat.core }} 芯总长：<b class="core-value">{{ qty(stat.length) }}</b> 米
       </span>
       <span>表七施工费：<b>{{ money(totalAmount) }}</b> 元</span>
     </div>
@@ -64,6 +64,18 @@
       <el-table-column label="金额(元)" width="130" align="right" class-name="num-cell">
         <template #default="{ row }">{{ money(row.amount) }}</template>
       </el-table-column>
+      <el-table-column label="关联图纸" width="110">
+        <template #default="{ row }">
+          <DrawingJump
+            v-if="hitsOf(row).length"
+            :sources="hitsOf(row).map((hit) => hit.source)"
+            :material="row.segmentName"
+            :highlight="row.segmentName"
+            :highlight-fallback="hitsOf(row)[0]?.matched[0]"
+          />
+          <span v-else class="muted" :title="drawingHint">未关联</span>
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-pagination
@@ -81,9 +93,11 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { boqApi, type BoqItemVO, type FixedSegmentVO } from '@/api'
+import { boqApi, projectApi, type BoqItemVO, type DrawingTextLabel, type FileVO, type FixedSegmentVO } from '@/api'
 import { money } from '@/utils/format'
 import { useTableHeight } from '@/utils/useTableHeight'
+import DrawingJump from './DrawingJump.vue'
+import { findSegmentDrawingHits, type DrawingLabelDoc } from './drawingCompare'
 
 /** refreshKey 由父组件在清单重新导入/核查完成后自增，Tab 不销毁也能重新取数 */
 const props = defineProps<{ projectId: number; refreshKey?: number }>()
@@ -97,6 +111,8 @@ const tableRef = ref<{ $el: HTMLElement }>()
 const tableHeight = useTableHeight(tableRef)
 const segments = ref<FixedSegmentVO[]>([])
 const boqItems = ref<BoqItemVO[]>([])
+/** 本项目已解析图纸的文字标注索引，用于按段名回查图纸页 */
+const labelDocs = ref<DrawingLabelDoc[]>([])
 const loading = ref(false)
 const keyword = ref('')
 const coreFilter = ref<number | undefined>(undefined)
@@ -177,6 +193,22 @@ function qty(value?: number | null) {
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 }
 
+/** 段名在图纸标注里命中的页；同一段名共用一份结果 */
+const hitCache = new Map<string, ReturnType<typeof findSegmentDrawingHits>>()
+function hitsOf(row: FixedSegmentVO) {
+  const name = row.segmentName ?? ''
+  let hits = hitCache.get(name)
+  if (!hits) {
+    hits = findSegmentDrawingHits(name, labelDocs.value)
+    hitCache.set(name, hits)
+  }
+  return hits
+}
+
+const drawingHint = computed(() =>
+  labelDocs.value.length ? '图纸标注未找到该段名' : '暂无已解析图纸，或图纸未重新解析出文字标注',
+)
+
 function onQuery() {
   page.value = 1
 }
@@ -206,16 +238,38 @@ function goToCoreBoq(core?: number) {
 async function reload() {
   loading.value = true
   try {
-    const [segmentRows, boqRows] = await Promise.all([
+    const [segmentRows, boqRows, files] = await Promise.all([
       boqApi.fixedSegments(props.projectId),
       boqApi.all(props.projectId),
+      projectApi.files(props.projectId),
     ])
     segments.value = segmentRows
     boqItems.value = boqRows
+    labelDocs.value = await loadLabelDocs(files)
+    hitCache.clear()
     emit('count', segments.value.length)
   } finally {
     loading.value = false
   }
+}
+
+/** 读取本项目已解析图纸的文字标注，供段落名回查图纸页 */
+async function loadLabelDocs(files: FileVO[]): Promise<DrawingLabelDoc[]> {
+  const drawings = files.filter(
+    (file) => (file.fileType === 'DXF' || file.fileType === 'DWG') && file.parseStatus === 'SUCCESS',
+  )
+  const results = await Promise.all(
+    drawings.map(async (file) => {
+      try {
+        const data = await projectApi.parseResult(file.id)
+        const labels = (data?.textLabels ?? []) as DrawingTextLabel[]
+        return { fileId: file.id, fileName: file.fileName, labels }
+      } catch {
+        return { fileId: file.id, fileName: file.fileName, labels: [] as DrawingTextLabel[] }
+      }
+    }),
+  )
+  return results.filter((doc) => doc.labels.length > 0)
 }
 
 watch(() => props.refreshKey, reload)
@@ -259,17 +313,21 @@ onMounted(reload)
   font-size: 14px;
 }
 .core-link {
-  color: #409eff;
   cursor: pointer;
 }
-.core-link:hover {
+.amount-summary b.core-value {
+  color: #409eff;
+}
+.core-link:hover .core-value {
   text-decoration: underline;
 }
 .core-link.disabled {
-  color: #606266;
   cursor: default;
 }
-.core-link.disabled:hover {
+.core-link.disabled .core-value {
+  color: #606266;
+}
+.core-link.disabled:hover .core-value {
   text-decoration: none;
 }
 .segment-name {

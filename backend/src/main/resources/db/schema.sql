@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS proj_project (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   project_no VARCHAR(64) NOT NULL COMMENT '项目编号',
   project_name VARCHAR(255) NOT NULL COMMENT '项目名称',
+  project_manager VARCHAR(64) COMMENT '项目经理',
   eng_type VARCHAR(32) COMMENT '工程类型：LINE 线路 / DEVICE 设备安装（页面暂不展示）',
   contract_no VARCHAR(64) COMMENT '合同编号',
   order_no VARCHAR(128) COMMENT '订单编号',
