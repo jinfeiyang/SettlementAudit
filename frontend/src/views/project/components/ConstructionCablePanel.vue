@@ -17,24 +17,44 @@
       </el-select>
       <el-button type="primary" @click="onQuery">查询</el-button>
       <el-button @click="resetQuery">重置</el-button>
-      <el-button @click="reload">刷新</el-button>
       <span class="note">
         共 {{ segments.length }} 段<template v-if="dupCount">，疑似重复 {{ dupCount }} 段（起止反转 / 名称近似）</template>
       </span>
     </div>
 
     <div class="amount-summary">
-      <span
+      <div
         v-for="stat in coreStats"
         :key="stat.core"
-        class="core-link"
+        class="core-stat"
         :class="{ disabled: !boqByCore.get(stat.core) }"
-        :title="boqByCore.get(stat.core) ? '点击跳转到清单对应的光缆行' : '清单无对应光缆行'"
-        @click="goToCoreBoq(stat.core)"
       >
-        {{ stat.core }} 芯总长：<b class="core-value">{{ qty(stat.length) }}</b> 米
-      </span>
-      <span>表七施工费：<b>{{ money(totalAmount) }}</b> 元</span>
+        <span
+          class="core-link"
+          :title="boqByCore.get(stat.core) ? '点击跳转到清单对应的光缆行' : '清单无对应光缆行'"
+          @click="goToCoreBoq(stat.core)"
+        >
+          {{ stat.core }} 芯总长：<b class="core-value">{{ qty(stat.length) }}</b> 米
+        </span>
+        <span class="compare-line">
+          <template v-if="boqByCore.get(stat.core)">
+            清单申报 <b>{{ qty(boqByCore.get(stat.core)!.quantity) }}</b> 米
+            <el-tag size="small" :type="lengthCompare(stat.length, boqByCore.get(stat.core)!.quantity)" effect="plain">
+              {{ lengthCompareText(stat.length, boqByCore.get(stat.core)!.quantity) }}
+            </el-tag>
+          </template>
+          <span v-else class="muted">清单无对应光缆行</span>
+        </span>
+      </div>
+      <div class="core-stat">
+        <span>表七施工费：<b>{{ money(totalAmount) }}</b> 元</span>
+        <span class="compare-line">
+          清单施工费 <b>{{ money(boqTotalAmount) }}</b> 元
+          <el-tag size="small" :type="amountCompare" effect="plain">
+            {{ amountCompareText }}
+          </el-tag>
+        </span>
+      </div>
     </div>
 
     <el-table
@@ -46,12 +66,21 @@
       empty-text="暂无施工光缆逐段数据，请在「资料与解析」重新导入结算清单 Excel"
       :row-class-name="rowClass"
     >
+      <el-table-column label="序号" type="index" :index="indexMethod" width="70" align="center" />
       <el-table-column label="段落名称" min-width="320" class-name="wrap-cell">
         <template #default="{ row }">
           <span class="segment-name">
             <span>{{ row.segmentName }}</span>
-            <el-tag v-if="row.dupGroup" :type="row.dupType === 'REVERSED' ? 'danger' : 'warning'" size="small" effect="plain">
-              {{ row.dupType === 'REVERSED' ? '起止反转重复' : '名称近似重复' }}
+            <el-tag
+              v-if="row.dupGroup"
+              :type="row.dupType === 'REVERSED' ? 'danger' : 'warning'"
+              size="small"
+              effect="plain"
+              class="dup-tag-link"
+              :title="`查看同组 ${groupOf(row.dupGroup).length} 段的名称差异`"
+              @click="openDupGroup(row)"
+            >
+              {{ row.dupType === 'REVERSED' ? '起止反转重复' : '名称近似重复' }} · 查看
             </el-tag>
             <span v-else class="dup-normal">正常</span>
           </span>
@@ -69,9 +98,11 @@
           <DrawingJump
             v-if="hitsOf(row).length"
             :sources="hitsOf(row).map((hit) => hit.source)"
-            :material="row.segmentName"
-            :highlight="row.segmentName"
-            :highlight-fallback="hitsOf(row)[0]?.matched[0]"
+            :material="highlightOf(row).highlight"
+            :spec="highlightOf(row).spec"
+            :highlight="highlightOf(row).highlight"
+            :highlight-spec="highlightOf(row).spec"
+            :highlight-fallback="highlightOf(row).fallback"
           />
           <span v-else class="muted" :title="drawingHint">未关联</span>
         </template>
@@ -88,6 +119,46 @@
       @current-change="(p: number) => (page = p)"
       @size-change="onSizeChange"
     />
+
+    <el-dialog
+      v-model="dupVisible"
+      :title="dupDialogTitle"
+      width="70%"
+      align-center
+      destroy-on-close
+    >
+      <template v-if="dupCurrent">
+        <el-alert
+          :type="dupCurrent.dupType === 'REVERSED' ? 'error' : 'warning'"
+          :closable="false"
+          show-icon
+          class="dup-alert"
+          :title="dupCurrent.dupType === 'REVERSED' ? '起止点反转：同一段被正反各记一次，名称相同、起止互换' : '名称近似：段名只差少量字符，可能是同一段的两种写法'"
+        />
+        <el-table :data="dupGroupRows" border size="small" empty-text="同组段落缺失">
+          <el-table-column label="序号" width="80" align="center">
+            <template #default="{ row }">{{ seqOf(row) }}</template>
+          </el-table-column>
+          <el-table-column label="段落名称" min-width="320" class-name="wrap-cell">
+            <template #default="{ row }">
+              <span
+                v-for="(part, i) in diffParts(row.segmentName)"
+                :key="i"
+                :class="{ 'diff-mark': part.diff }"
+              >{{ part.text }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="芯数" width="80" align="right" prop="coreCount" />
+          <el-table-column label="长度(米)" width="130" align="right" class-name="num-cell">
+            <template #default="{ row }">{{ qty(row.length) }}</template>
+          </el-table-column>
+          <el-table-column label="金额(元)" width="130" align="right" class-name="num-cell">
+            <template #default="{ row }">{{ money(row.amount) }}</template>
+          </el-table-column>
+        </el-table>
+        <p class="dup-note">红色字符为与同组第一段不同的部分；重复仅作提示，不会自动核减金额，请人工复核。</p>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -122,6 +193,73 @@ const size = ref(50)
 
 const dupCount = computed(() => segments.value.filter((s) => s.dupGroup > 0).length)
 
+/** 重复组弹窗 */
+const dupVisible = ref(false)
+const dupCurrent = ref<FixedSegmentVO>()
+const dupGroups = computed(() => {
+  const map = new Map<number, FixedSegmentVO[]>()
+  for (const s of segments.value) {
+    if (s.dupGroup > 0) {
+      const list = map.get(s.dupGroup) ?? []
+      list.push(s)
+      map.set(s.dupGroup, list)
+    }
+  }
+  return map
+})
+function groupOf(groupNo: number) {
+  return dupGroups.value.get(groupNo) ?? []
+}
+const dupGroupRows = computed(() => (dupCurrent.value ? groupOf(dupCurrent.value.dupGroup) : []))
+const dupDialogTitle = computed(() =>
+  dupCurrent.value
+    ? `重复组 ${dupCurrent.value.dupGroup} · ${dupCurrent.value.dupType === 'REVERSED' ? '起止反转' : '名称近似'}（${dupGroupRows.value.length} 段）`
+    : '重复组',
+)
+
+function openDupGroup(row: FixedSegmentVO) {
+  dupCurrent.value = row
+  dupVisible.value = true
+}
+
+/**
+ * 逐字符对比段名与组内第一段，把不同的字符标出来（供弹窗红色高亮）。
+ * 起止反转的两段长度相同、只是顺序不同，逐位对比会把整段标红，意义不大；
+ * 那种情况直接按「整段不同」显示，用户看行号就明白是正反两条。
+ */
+function diffParts(name?: string): { text: string; diff: boolean }[] {
+  const base = dupGroupRows.value[0]?.segmentName ?? ''
+  const target = name ?? ''
+  if (dupCurrent.value?.dupType === 'REVERSED' || base === target) {
+    return [{ text: target, diff: false }]
+  }
+  const parts: { text: string; diff: boolean }[] = []
+  const len = Math.max(base.length, target.length)
+  let buffer = ''
+  let bufferDiff = false
+  const flush = () => {
+    if (buffer) {
+      parts.push({ text: buffer, diff: bufferDiff })
+      buffer = ''
+    }
+  }
+  for (let i = 0; i < len; i += 1) {
+    const same = i < base.length && i < target.length && base[i] === target[i]
+    const ch = i < target.length ? target[i] : ''
+    if (ch && same === bufferDiff) {
+      buffer += ch
+    } else {
+      flush()
+      if (ch) {
+        buffer = ch
+        bufferDiff = !same
+      }
+    }
+  }
+  flush()
+  return parts
+}
+
 /** 表八光缆行在导入时被改写为「固定单价法施工费（N芯，X段汇总）」，按芯数建立关联 */
 const boqByCore = computed(() => {
   const map = new Map<number, BoqItemVO>()
@@ -136,6 +274,25 @@ const boqByCore = computed(() => {
   }
   return map
 })
+
+/**
+ * 施工光缆段看图时用的标红参数：按芯数找到清单对应的光缆行，
+ * 用清单行名在 DXF 里匹配材料表文字（和工程量清单侧逻辑一致）。
+ * 清单行里"固定单价法施工费（24芯…）"是特征描述，itemName 本身就是材料名。
+ */
+function highlightOf(row: FixedSegmentVO): { highlight: string; spec: string; fallback: string } {
+  if (row.coreCount == null) {
+    return { highlight: row.segmentName || '', spec: '', fallback: '' }
+  }
+  const boq = boqByCore.value.get(row.coreCount)
+  if (!boq) {
+    return { highlight: row.segmentName || '', spec: '', fallback: '' }
+  }
+  const name = boq.itemName || ''
+  const spec = boq.featureDesc?.match(/[A-Z]+G?Y?T?[A-Z]*-\d+[A-Z]*/i)?.[0] || ''
+  const fallback = name.replace(/\s*固定单价法施工费.*$/, '').trim() || name
+  return { highlight: name, spec, fallback }
+}
 
 const coreOptions = computed(() =>
   [...new Set(segments.value.map((s) => s.coreCount).filter((c): c is number => c != null))]
@@ -157,6 +314,36 @@ const coreStats = computed(() => {
 
 const totalAmount = computed(() =>
   segments.value.reduce((sum, s) => sum + Number(s.amount ?? 0), 0))
+
+/** 工程量清单里对应光缆行的施工费合计（去重后按芯数各取一条汇总行） */
+const boqTotalAmount = computed(() =>
+  [...boqByCore.value.values()].reduce((sum, item) => sum + Number(item.totalPrice ?? 0), 0))
+
+const LENGTH_TOLERANCE = 0.5
+const AMOUNT_TOLERANCE = 0.01
+
+function lengthCompare(tableLen?: number, boqLen?: number): 'success' | 'danger' | 'info' {
+  if (tableLen == null || boqLen == null) {
+    return 'info'
+  }
+  return Math.abs(Number(tableLen) - Number(boqLen)) <= LENGTH_TOLERANCE ? 'success' : 'danger'
+}
+
+function lengthCompareText(tableLen?: number, boqLen?: number) {
+  if (tableLen == null || boqLen == null) {
+    return '无数据'
+  }
+  const diff = Number(tableLen) - Number(boqLen)
+  return Math.abs(diff) <= LENGTH_TOLERANCE ? '一致' : `差 ${diff > 0 ? '+' : ''}${qty(diff)} 米`
+}
+
+const amountCompare = computed<'success' | 'danger' | 'info'>(() =>
+  Math.abs(totalAmount.value - boqTotalAmount.value) <= AMOUNT_TOLERANCE ? 'success' : 'danger')
+
+const amountCompareText = computed(() => {
+  const diff = totalAmount.value - boqTotalAmount.value
+  return Math.abs(diff) <= AMOUNT_TOLERANCE ? '一致' : `差 ${diff > 0 ? '+' : ''}${money(diff)} 元`
+})
 
 const filtered = computed(() => {
   const kw = keyword.value.trim()
@@ -184,6 +371,17 @@ const pageRows = computed(() => {
 
 function rowClass({ row }: { row: FixedSegmentVO }) {
   return row.dupGroup > 0 ? 'dup-row' : ''
+}
+
+/** 序号按当前筛选结果的次序跨页连续，而不是每页都从 1 开始 */
+function indexMethod(index: number) {
+  return (page.value - 1) * size.value + index + 1
+}
+
+/** 重复详情展示整组，序号按全量段落次序取，和表格首列在「无筛选」时一致 */
+function seqOf(row: FixedSegmentVO) {
+  const index = segments.value.findIndex((s) => s.id === row.id)
+  return index >= 0 ? index + 1 : (row.rowNo ?? '-')
 }
 
 function qty(value?: number | null) {
@@ -296,7 +494,7 @@ onMounted(reload)
 }
 .amount-summary {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 18px;
   flex-wrap: wrap;
   padding: 10px 14px;
@@ -306,6 +504,12 @@ onMounted(reload)
   border-radius: 4px;
   font-size: 13px;
   color: #606266;
+}
+.core-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.5;
 }
 .amount-summary b {
   font-variant-numeric: tabular-nums;
@@ -321,14 +525,25 @@ onMounted(reload)
 .core-link:hover .core-value {
   text-decoration: underline;
 }
-.core-link.disabled {
+.core-stat.disabled .core-link {
   cursor: default;
 }
-.core-link.disabled .core-value {
+.core-stat.disabled .core-value {
   color: #606266;
 }
-.core-link.disabled:hover .core-value {
+.core-stat.disabled .core-link:hover .core-value {
   text-decoration: none;
+}
+.compare-line {
+  font-size: 12px;
+  color: #909399;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.compare-line b {
+  color: #606266;
+  font-size: 12px;
 }
 .segment-name {
   display: inline-flex;
@@ -339,6 +554,22 @@ onMounted(reload)
 .dup-normal {
   color: #c0c4cc;
   font-size: 11px;
+}
+.dup-tag-link {
+  cursor: pointer;
+}
+.dup-alert {
+  margin-bottom: 12px;
+}
+.diff-mark {
+  color: #f56c6c;
+  font-weight: 600;
+  background: #fef0f0;
+}
+.dup-note {
+  margin: 10px 0 0;
+  color: #909399;
+  font-size: 12px;
 }
 .muted {
   color: #a8abb2;

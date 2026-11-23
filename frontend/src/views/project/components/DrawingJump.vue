@@ -77,7 +77,7 @@
         :focus="focus"
         :highlight="highlight || material"
         :highlight-spec="spec"
-        :highlight-fallback="highlight ? material : ''"
+        :highlight-fallback="highlightFallback || (highlight ? material : '')"
         show-pages
         :related-pages="relatedPageNos"
       />
@@ -111,8 +111,18 @@ const props = withDefaults(
      * 图上找不到时再退回 material（材料表名称）
      */
     highlight?: string
+    /** highlight 在图上找不到时的备用文字（如段落名找不到就退回材料表名称） */
+    highlightFallback?: string
   }>(),
-  { sources: () => [], fallback: null, showTitle: false, material: '', spec: '', highlight: '' },
+  {
+    sources: () => [],
+    fallback: null,
+    showTitle: false,
+    material: '',
+    spec: '',
+    highlight: '',
+    highlightFallback: '',
+  },
 )
 
 const visible = ref(false)
@@ -163,13 +173,17 @@ function isCurrent(source: DrawingSource) {
   return current.value?.fileId === source.fileId && current.value?.frame === source.frame
 }
 
-/** 张号优先（图签上印的才对得上纸），没有就用图框序号 */
+/**
+ * 页码标签：图框序号优先，因为图签印刷的张号可能重复/缺失（实测同一张图里
+ * 「第8张」「第13张」各出现多次），用它当页码会出现重复且对不上定位页。
+ * 只有没有图框序号时才退回张号；再没有就写「材料表」，绝不拼出「图框 undefined」。
+ */
 function sourceLabel(source: DrawingSource) {
+  if (source.frame != null) {
+    return `第 ${source.frame} 张`
+  }
   if (source.sheet) {
     return `第 ${source.sheet} 张`
-  }
-  if (source.frame !== null) {
-    return `图框 ${source.frame}`
   }
   return '材料表'
 }

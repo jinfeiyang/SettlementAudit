@@ -354,11 +354,25 @@ export function annotationSheets(measure?: Record<string, any> | null): {
   meters: number
   count: number
   composition: string
+  /** 图上全部段长标注的逐段累加构成，如「光缆 391.8 + 余线 36.2」 */
+  segmentText: string
+  segmentTotal: number
 }[] {
   const rows: any[] = measure?.annotationBySheet ?? []
   return rows
     .map((row) => {
       const items: { label: string; meters: number }[] = row.items ?? []
+      const parts: Record<string, number> = row.segmentParts ?? {}
+      // kind（敷设方式）对应的展示名；bare 是没写敷设方式的光缆段
+      const partName: Record<string, string> = {
+        bare: '光缆', pipe: '管道', overhead: '架空', buried: '直埋',
+        wall: '墙壁', duct: '槽道', extra: '余线',
+        tie: '扎', lead: '引', bind: '绑', clip: '卡', other: '其他',
+      }
+      const segmentText = Object.keys(parts)
+        .sort((a, b) => parts[b] - parts[a])
+        .map((key) => `${partName[key] ?? categoryLabel(key)} ${round(Number(parts[key]) || 0)}`)
+        .join(' + ')
       return {
         sheet: String(row.sheet ?? ''),
         sourceLabel: row.source === 'table' ? '材料表' : row.source === 'summary' ? '图上合计' : '逐段标注',
@@ -368,6 +382,8 @@ export function annotationSheets(measure?: Record<string, any> | null): {
         composition: items
           .map((item) => `${String(item.label ?? '').replace(/^通信光缆\s*/, '')} ${round(Number(item.meters) || 0)}`)
           .join(' + '),
+        segmentText,
+        segmentTotal: round(Number(row.segmentTotal) || 0),
         order: Number(/(\d+)/.exec(String(row.sheet ?? ''))?.[1] ?? 1e6),
       }
     })

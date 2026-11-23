@@ -39,8 +39,8 @@ CABLE_HINTS = ("光缆", "电缆", "纤", "线缆", "线路")
 # 不少竣工图不单独画光缆图层，长度只写在每段路由线旁边，只能从标注反推。
 # 一行里常并排写好几段（「桥架229.7余5 线槽5余2 钉0.3」），所以按 token 扫而不是整行匹配；
 # 小数只认 1~2 位：坐标（121.241693）也是数字串，靠这条挡掉。
-_LENGTH_KIND_WORDS = ("管道|排管|穿管|加挂|附挂|架空|直埋|墙壁|沿墙|槽道|桥架|过桥|顶管|飞线"
-                      "|引上|引下|桥|钉|余|槽|管|引|埋")
+_LENGTH_KIND_WORDS = ("管道|排管|穿管|加挂|加吊|附挂|架空|直埋|墙壁|沿墙|槽道|桥架|过桥|顶管|飞线"
+                      "|引上|引下|引槽|桥|钉|余|槽|管|引|埋|扎|绑|卡")
 LENGTH_TOKEN_RE = re.compile(
     rf"(?P<kind>{_LENGTH_KIND_WORDS})?\s*(?<!\d)(?P<value>\d+(?:\.\d{{1,2}})?)(?![\d.A-Za-z])"
     r"\s*(?P<unit>m|米)?",
@@ -49,6 +49,35 @@ LENGTH_TOKEN_RE = re.compile(
 # 光缆段的合计：「合计399.5」「合计：470」。图上印了合计就说明这几段光缆已经汇总过。
 LENGTH_TOTAL_RE = re.compile(r"合计\s*[:：]?\s*(?P<value>\d+(?:\.\d{1,2})?)\s*(?:m|米)?",
                              re.IGNORECASE)
+# 一行里并排写的光缆本体 + 余线汇总：「光缆391.8+余线36.2」「光缆 391.8 余线 36.2」。
+# 两段都写明前缀，且整行只有这两段，才当逐段长度采信。
+_CABLE_REST_SUMMARY_RE = re.compile(
+    r"光缆\s*(?P<cable>\d+(?:\.\d{1,2})?)\s*[+＋]?\s*余线\s*(?P<rest>\d+(?:\.\d{1,2})?)\s*(?:m|米)?"
+)
+# 括号汇总标注：竣工图常把一条光缆的敷设长度按方式写成
+# 「(槽)69.9(扎)2(引)3(余)9」或「706.5(管)9(槽)7(余)16」，
+# 整行由若干「(方式)数值」或「数值(方式)」组成，就是这条光缆的逐段累加。
+_BRACKET_KIND_WORDS = r"槽|管|引|余|扎|绑|卡|加挂|加吊|槽道|管道|桥架|架空|直埋|墙壁"
+_BRACKET_TOKEN = (r"(?:\(\s*(?:" + _BRACKET_KIND_WORDS + r")\s*\)\s*\d+(?:\.\d{1,2})?"
+                  r"|\d+(?:\.\d{1,2})?\s*\(\s*(?:" + _BRACKET_KIND_WORDS + r")\s*\))")
+_BRACKET_SUMMARY_RE = re.compile(
+    r"^\s*" + _BRACKET_TOKEN + r"(?:\s*[+＋]?\s*" + _BRACKET_TOKEN + r")*\s*$"
+)
+# 从括号汇总里逐个抠出 (方式, 数值)
+_BRACKET_ITEM_RE = re.compile(
+    r"\(\s*(?P<kind1>槽|管|引|余|扎|绑|卡|加挂|加吊|槽道|管道|桥架|架空|直埋|墙壁)\s*\)\s*"
+    r"(?P<value1>\d+(?:\.\d{1,2})?)"
+    r"|(?P<value2>\d+(?:\.\d{1,2})?)\s*\(\s*"
+    r"(?P<kind2>槽|管|引|余|扎|绑|卡|加挂|加吊|槽道|管道|桥架|架空|直埋|墙壁)\s*\)"
+)
+_BRACKET_KIND_MAP = {
+    "槽": "duct", "槽道": "duct", "桥架": "duct",
+    "管": "pipe", "管道": "pipe",
+    "加挂": "overhead", "加吊": "overhead", "架空": "overhead",
+    "直埋": "buried", "墙壁": "wall",
+    "余": "extra",
+    "引": "lead", "扎": "tie", "绑": "bind", "卡": "clip",
+}
 # 纯段长行里允许残留的字符（分隔符与说明文字）；残留了数字/字母说明这行不是段长标注
 _LENGTH_NOISE_RE = re.compile(r"[A-Za-z0-9]")
 # 敷设方式词的首字：「钉65.2余14」里的"余"是下一段的开头，不是 65.2 的单位
@@ -62,11 +91,12 @@ _ANNOTATION_SPEC_HINT_RE = re.compile(r"芯")
 # 通信线路图上「桥20」「钉4」「引上4」「余10」都是段长，前缀只是敷设方式。
 LENGTH_KIND_MAP = {
     "管": "pipe", "管道": "pipe", "排管": "pipe", "穿管": "pipe", "顶管": "pipe",
-    "加挂": "overhead", "附挂": "overhead", "架空": "overhead",
+    "加挂": "overhead", "加吊": "overhead", "附挂": "overhead", "架空": "overhead",
     "直埋": "buried",
     "墙壁": "wall", "沿墙": "wall", "钉": "wall",
-    "槽道": "duct", "桥架": "duct", "桥": "duct", "过桥": "duct", "槽": "duct",
-    "引上": "other", "引下": "other", "余": "other", "飞线": "other",
+    "槽道": "duct", "桥架": "duct", "桥": "duct", "过桥": "duct", "槽": "duct", "引槽": "duct",
+    "引上": "other", "引下": "other", "余": "extra", "飞线": "other", "引": "lead",
+    "扎": "tie", "绑": "bind", "卡": "clip",
 }
 
 
@@ -80,6 +110,34 @@ def parse_length_labels(text: str) -> tuple[list[tuple[float, str, bool]], list[
     否则"每段光缆合计 + 按芯数汇总的合计"会被加两遍。
     """
     line = text or ""
+    # 「光缆391.8+余线36.2」这类汇总标注：一整行把光缆本体和余线并排写在一起。
+    # 通用 token 扫描会因「光缆/余线」不是敷设方式词而把整行判死，这里单独识别：
+    # 只有整行严格由「光缆 数字」「余线 数字」用 + / 空格 连接时才采信，避免误伤规格行。
+    cable_rest = _CABLE_REST_SUMMARY_RE.fullmatch(line.strip())
+    if cable_rest:
+        segments = []
+        for value, kind in ((cable_rest.group("cable"), "bare"),
+                            (cable_rest.group("rest"), "extra")):
+            number = float(value)
+            if 0.5 <= number <= 10000:
+                segments.append((number, kind, "." not in value))
+        if segments:
+            return segments, []
+
+    # 括号汇总行「(槽)69.9(扎)2(引)3(余)9」：整行都是方式+数值，直接按段长返回。
+    if _BRACKET_SUMMARY_RE.match(line.strip()):
+        segments = []
+        for match in _BRACKET_ITEM_RE.finditer(line.strip()):
+            kind_word = match.group("kind1") or match.group("kind2") or ""
+            value = match.group("value1") or match.group("value2") or ""
+            if not value:
+                continue
+            number = float(value)
+            if 0.5 <= number <= 10000:
+                segments.append((number, _BRACKET_KIND_MAP.get(kind_word, "other"),
+                                 "." not in value))
+        if segments:
+            return segments, []
     total_matches = [m for m in LENGTH_TOTAL_RE.finditer(line)
                      if 0.5 <= float(m.group("value")) <= 10000]
     totals = [(float(m.group("value")), False) for m in total_matches]
@@ -150,6 +208,11 @@ def _filter_table_numbers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     kept: list[dict[str, Any]] = []
     for layer_items in by_layer.values():
+        # 汇总标注（光缆N+余线M / (槽)N(扎)M…）里的整数是长度，不是表格序号，直接保留
+        kept.extend(item for item in layer_items if item.get("isSummary"))
+        layer_items = [item for item in layer_items if not item.get("isSummary")]
+        if not layer_items:
+            continue
         # 连号检测：同一图层里出现 4 个以上连续整数，基本就是表格序号
         int_values = sorted({item["value"] for item in layer_items if item["isInt"]})
         run_drop: set[float] = set()
@@ -248,6 +311,30 @@ def _table_cable_items(tables: list[dict[str, Any]], frames: list[dict[str, Any]
     return items
 
 
+def _summary_parts_of(text: str) -> dict[str, float] | None:
+    """把一行「该条光缆的汇总标注」解析成 {敷设方式: 米数}，不是汇总就返回 None。
+
+    支持两种竣工图常见写法：
+    - `光缆391.8+余线36.2`
+    - `(槽)69.9(扎)2(引)3(余)9`
+    """
+    stripped = (text or "").strip()
+    match = _CABLE_REST_SUMMARY_RE.fullmatch(stripped)
+    if match:
+        return {"bare": float(match.group("cable")), "extra": float(match.group("rest"))}
+    if _BRACKET_SUMMARY_RE.match(stripped):
+        parts: dict[str, float] = {}
+        for item in _BRACKET_ITEM_RE.finditer(stripped):
+            kind_word = item.group("kind1") or item.group("kind2") or ""
+            value = item.group("value1") or item.group("value2") or ""
+            if not value:
+                continue
+            kind = _BRACKET_KIND_MAP.get(kind_word, "other")
+            parts[kind] = parts.get(kind, 0.0) + float(value)
+        return parts or None
+    return None
+
+
 def summarize_annotations(segments: list[dict[str, Any]], totals: list[dict[str, Any]],
                           key_of, table_items: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     """按张汇总图上标注的长度，返回采用值、分张明细与摘掉的重复标注。
@@ -274,7 +361,34 @@ def summarize_annotations(segments: list[dict[str, Any]], totals: list[dict[str,
     counted: list[dict[str, Any]] = []
     segment_sum: dict[str, float] = {}
     segment_count: dict[str, int] = {}
+    # 每张图上「全部逐段标注」按敷设方式累加（含下面会被当成与材料表重复而摘掉的组）。
+    # 用户按张核对时要看的就是这个逐段累加构成（如 光缆391.8 + 余线36.2 = 428），
+    # 不能因为某组恰好等于材料表总长就把这段长度从可见累加里抹掉。
+    segment_parts_all: dict[str, dict[str, float]] = {}
     for sheet, groups in by_sheet_groups.items():
+        # 优先用图上印好的汇总标注当这一张的逐段构成：
+        #   「光缆391.8+余线36.2」或「(槽)69.9(扎)2(引)3(余)9」。
+        # 同一段汇总可能因分幅在多个图框各印一份，按原文去重，只算一次；
+        # 一张图有多条光缆时（各自印一份不同的汇总），不同的要累加。
+        # 沿途零散小段（桥20/钉4）与汇总重复，不再叠加。
+        summary_by_text: dict[str, dict[str, float]] = {}
+        all_items = [item for items in groups.values() for item in items]
+        for item in all_items:
+            text = str(item.get("text") or "")
+            parts_of = _summary_parts_of(text)
+            if parts_of:
+                summary_by_text.setdefault(text.strip(), parts_of)
+        if summary_by_text:
+            parts = {}
+            for summary in summary_by_text.values():
+                for key, value in summary.items():
+                    parts[key] = parts.get(key, 0.0) + value
+        else:
+            parts = {}
+            for item in all_items:
+                key = item.get("kind") or "bare"
+                parts[key] = parts.get(key, 0.0) + float(item["value"])
+        segment_parts_all[sheet] = {k: round(v, 3) for k, v in parts.items()}
         table_sum = table_totals.get(sheet) or 0.0
         rest_groups: dict[tuple, list[dict[str, Any]]] = {}
         for key, items in groups.items():
@@ -316,10 +430,14 @@ def summarize_annotations(segments: list[dict[str, Any]], totals: list[dict[str,
         else:
             meters, source = segment_sum.get(sheet, 0.0), "segments"
             items = []
+        sheet_parts = segment_parts_all.get(sheet, {})
         sheet_rows.append({
             "sheet": sheet,
             "meters": round(meters, 3),
             "segmentMeters": round(segment_sum.get(sheet, 0.0), 3),
+            # 逐段累加：图上所有段长标注之和（含与材料表等值的那组），按敷设方式拆分
+            "segmentParts": sheet_parts,
+            "segmentTotal": round(sum(sheet_parts.values()), 3),
             "totalMeters": total_sum,
             "tableMeters": table_sum,
             "source": source,
@@ -1572,10 +1690,14 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
                 text_labels.append({"text": clean[:200], "x": round(x, 3), "y": round(y, 3),
                                     "layer": layer})
             segments, totals = parse_length_labels(clean)
+            # 汇总标注（「光缆N+余线M」「(槽)N(扎)M…」）里的整数是长度不是表格序号，
+            # 打标记让 _filter_table_numbers 别把 4、12、3、13 这种当成连号剔掉。
+            is_summary = _summary_parts_of(clean) is not None
             for value, kind, is_int in segments:
                 if len(length_labels) < 5000:
                     length_labels.append({"text": clean, "value": round(value, 3), "kind": kind,
-                                          "isInt": is_int, "x": x, "y": y, "layer": layer})
+                                          "isInt": is_int, "isSummary": is_summary,
+                                          "x": x, "y": y, "layer": layer})
             for value, pure in totals:
                 if len(length_totals) < 500:
                     length_totals.append({"text": clean, "value": round(value, 3), "pure": pure,

@@ -249,6 +249,14 @@
               <el-table-column label="光缆长度（米）" width="130">
                 <template #default="{ row }">{{ formatQuantity(row.meters) }}</template>
               </el-table-column>
+              <el-table-column label="逐段累加（米）" min-width="200" class-name="wrap-cell">
+                <template #default="{ row }">
+                  <template v-if="row.segmentText">
+                    {{ row.segmentText }} <b class="seg-total">= {{ formatQuantity(row.segmentTotal) }}</b>
+                  </template>
+                  <span v-else class="muted">无逐段标注</span>
+                </template>
+              </el-table-column>
               <el-table-column prop="composition" label="组成（规格 米数）" min-width="240" class-name="wrap-cell">
                 <template #default="{ row }">
                   {{ row.composition || '无材料表，按逐段标注取量' }}
@@ -615,6 +623,10 @@ onBeforeUnmount(stopPoll)
 }
 .cable-table {
   margin-top: 8px;
+}
+.seg-total {
+  color: #409eff;
+  font-variant-numeric: tabular-nums;
 }
 .diff-less {
   color: #f56c6c;

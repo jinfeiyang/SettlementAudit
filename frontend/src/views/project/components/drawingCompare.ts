@@ -169,7 +169,12 @@ export function findSegmentDrawingHits(
       if (!same && !contains) {
         continue
       }
-      const frameKey = label.frame == null ? 'none' : String(label.frame)
+      // 只认落在图框里的标注：图框外的文字（图签、封面说明）没有页码，
+      // 关联到它们会得到无法定位的「材料表」来源，例如段名重复出现在图签上时。
+      if (label.frame == null) {
+        continue
+      }
+      const frameKey = String(label.frame)
       const groupKey = `${doc.fileId}:${frameKey}`
       const hit = grouped.get(groupKey)
       if (hit) {

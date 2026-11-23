@@ -38,7 +38,7 @@
         :title="isRelatedPage(frame.no) ? '关联图页' : ''"
         @click="focusFrame(frame)"
       >
-        第 {{ frame.sheet || frame.no }} 张
+        {{ frameLabel(frame) }}
       </el-button>
     </div>
 
@@ -52,7 +52,7 @@
       <el-tooltip
         v-for="spot in hotspots"
         :key="spot.no"
-        :content="`第 ${spot.label} 张${isRelatedPage(spot.no) ? '（关联页）' : ''}`"
+        :content="`${spot.label}${isRelatedPage(spot.no) ? '（关联页）' : ''}`"
         placement="top"
         :show-after="0"
       >
@@ -114,6 +114,14 @@ type FrameBox = {
 
 const frames = ref<FrameBox[]>([])
 const activePage = ref<number | null>(null)
+
+/**
+ * 页码标签：一律用唯一的图框序号，图签张号可能重复（实测同一张图里
+ * 「第8张」「第13张」各出现多次），用张号会让全图热区/页码条出现重复提示。
+ */
+function frameLabel(frame: FrameBox): string {
+  return `第 ${frame.no} 张`
+}
 
 /**
  * 中文字体：dxf-viewer 内置字体仅含西文，不给字体则中文标注全部丢失。
@@ -317,7 +325,7 @@ function updateHotspots() {
     const width = Math.abs(bottomRight.x - topLeft.x)
     const height = Math.abs(bottomRight.y - topLeft.y)
     if (width > 2 && height > 2) {
-      list.push({ no: frame.no, label: frame.sheet || String(frame.no), left, top, width, height })
+      list.push({ no: frame.no, label: frameLabel(frame), left, top, width, height })
     }
   }
   hotspots.value = list

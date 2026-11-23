@@ -12,6 +12,7 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.io.IOException;
@@ -83,7 +84,41 @@ public final class ExcelUtil {
             }
             rows.add(cells);
         }
+        fillVerticalMerges(sheet, rows);
         return rows;
+    }
+
+    /**
+     * 纵向合并单元格只有左上角有值，POI 读到下方行是空串。表七「段落名称」列
+     * 常把同一段的名称跨两行合并，不填充就会多出两条空段落名的逐段明细。
+     * 只填充同列纵向合并（不碰横向合并的表头标题），避免影响按列识别表头。
+     */
+    private static void fillVerticalMerges(Sheet sheet, List<List<String>> rows) {
+        for (CellRangeAddress range : sheet.getMergedRegions()) {
+            if (range.getFirstColumn() != range.getLastColumn()
+                    || range.getFirstRow() == range.getLastRow()) {
+                continue;
+            }
+            int col = range.getFirstColumn();
+            int first = range.getFirstRow();
+            int last = Math.min(range.getLastRow(), rows.size() - 1);
+            if (first < 0 || first >= rows.size() || col >= rows.get(first).size()) {
+                continue;
+            }
+            String value = rows.get(first).get(col);
+            for (int r = first + 1; r <= last; r++) {
+                if (r >= rows.size()) {
+                    break;
+                }
+                List<String> cells = rows.get(r);
+                while (cells.size() <= col) {
+                    cells.add("");
+                }
+                if (cells.get(col).isEmpty()) {
+                    cells.set(col, value);
+                }
+            }
+        }
     }
 
     /** 工作表名称（越界返回空串） */
