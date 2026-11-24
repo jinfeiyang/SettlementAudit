@@ -93,6 +93,34 @@ CREATE TABLE IF NOT EXISTS boq_drawing_match (
 );
 CREATE INDEX IF NOT EXISTS idx_boq_match_project ON boq_drawing_match(project_id, boq_item_id);
 
+-- 图纸材料的人工合并（同物异名合成一行）：一个成员一条记录，group_key 相同为同一组
+CREATE TABLE IF NOT EXISTS drawing_material_merge (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  group_key VARCHAR(128) NOT NULL,
+  display_name VARCHAR(255),
+  member_key VARCHAR(600) NOT NULL,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_drawing_merge_project ON drawing_material_merge(project_id, group_key);
+
+-- 图纸材料的人工编辑：材料键不变，仅覆盖名称/规格/单位/数量
+CREATE TABLE IF NOT EXISTS drawing_material_edit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  material_key VARCHAR(600) NOT NULL,
+  name VARCHAR(255),
+  spec VARCHAR(255),
+  unit VARCHAR(32),
+  quantity DECIMAL(20,6),
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_drawing_edit_project ON drawing_material_edit(project_id, material_key);
+
 -- 表七光缆施工基准价逐段明细（B4 重复计费识别的数据源）
 CREATE TABLE IF NOT EXISTS boq_fixed_segment (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

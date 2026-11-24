@@ -104,6 +104,34 @@ CREATE TABLE IF NOT EXISTS boq_drawing_match (
   KEY idx_project_item (project_id, boq_item_id)
 ) COMMENT '清单与图纸材料的人工匹配';
 
+-- 图纸材料的人工合并（同物异名合成一行）：一个成员一条记录，group_key 相同为同一组
+CREATE TABLE IF NOT EXISTS drawing_material_merge (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  project_id BIGINT NOT NULL,
+  group_key VARCHAR(128) NOT NULL COMMENT '合并组标识',
+  display_name VARCHAR(255) COMMENT '合并后展示的名称',
+  member_key VARCHAR(600) NOT NULL COMMENT '成员材料键：名称|规格|单位',
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_project_group (project_id, group_key)
+) COMMENT '图纸材料的人工合并';
+
+-- 图纸材料的人工编辑：材料键不变，仅覆盖名称/规格/单位/数量
+CREATE TABLE IF NOT EXISTS drawing_material_edit (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  project_id BIGINT NOT NULL,
+  material_key VARCHAR(600) NOT NULL COMMENT '材料键：名称|规格|单位',
+  name VARCHAR(255),
+  spec VARCHAR(255),
+  unit VARCHAR(32),
+  quantity DECIMAL(20,6),
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_project_material (project_id, material_key)
+) COMMENT '图纸材料的人工编辑';
+
 -- 3.2 表七光缆施工基准价逐段明细（B4 重复计费识别的数据源）
 CREATE TABLE IF NOT EXISTS boq_fixed_segment (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,

@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -73,6 +74,57 @@ public class BoqController {
     @DeleteMapping("/drawing-matches/{boqItemId}")
     public R<Void> deleteDrawingMatch(@PathVariable Long projectId, @PathVariable Long boqItemId) {
         boqService.deleteDrawingMatch(projectId, boqItemId);
+        return R.ok();
+    }
+
+    @Operation(summary = "图纸材料的人工合并结论")
+    @GetMapping("/drawing-merges")
+    public R<List<BoqDtos.MaterialMergeVO>> drawingMerges(@PathVariable Long projectId) {
+        return R.ok(boqService.listDrawingMerges(projectId));
+    }
+
+    @Operation(summary = "保存图纸材料合并组（同物异名合并为一行）")
+    @PostMapping("/drawing-merges")
+    public R<Void> saveDrawingMerges(@PathVariable Long projectId,
+                                     @RequestBody BoqDtos.MaterialMergeReq req) {
+        boqService.saveDrawingMerges(projectId, req);
+        return R.ok();
+    }
+
+    @Operation(summary = "拆分图纸材料合并组")
+    @DeleteMapping("/drawing-merges/group/{groupKey}")
+    public R<Void> deleteDrawingMerges(@PathVariable Long projectId, @PathVariable String groupKey) {
+        boqService.deleteDrawingMerges(projectId, groupKey);
+        return R.ok();
+    }
+
+    @Operation(summary = "编辑清单行（数量/单价变化后合价自动重算）")
+    @PutMapping("/items/{itemId}")
+    public R<Void> updateItem(@PathVariable Long projectId,
+                              @PathVariable Long itemId,
+                              @RequestBody BoqDtos.ItemEditReq req) {
+        boqService.updateItem(projectId, itemId, req);
+        return R.ok();
+    }
+
+    @Operation(summary = "图纸材料的人工编辑结论")
+    @GetMapping("/drawing-edits")
+    public R<List<BoqDtos.MaterialEditVO>> drawingEdits(@PathVariable Long projectId) {
+        return R.ok(boqService.listDrawingEdits(projectId));
+    }
+
+    @Operation(summary = "保存图纸材料编辑（名称/规格/单位/数量，材料关联不变）")
+    @PostMapping("/drawing-edits")
+    public R<Void> saveDrawingEdit(@PathVariable Long projectId,
+                                   @RequestBody BoqDtos.MaterialEditReq req) {
+        boqService.saveDrawingEdit(projectId, req);
+        return R.ok();
+    }
+
+    @Operation(summary = "恢复图纸材料的原始解析结果")
+    @DeleteMapping("/drawing-edits/{materialKey}")
+    public R<Void> deleteDrawingEdit(@PathVariable Long projectId, @PathVariable String materialKey) {
+        boqService.deleteDrawingEdit(projectId, materialKey);
         return R.ok();
     }
 

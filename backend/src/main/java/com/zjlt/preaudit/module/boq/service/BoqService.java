@@ -7,10 +7,14 @@ import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.exception.BizException;
 import com.zjlt.preaudit.common.util.TextUtil;
 import com.zjlt.preaudit.module.boq.dto.BoqDtos;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingEdit;
 import com.zjlt.preaudit.module.boq.entity.BoqDrawingMatch;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingMerge;
 import com.zjlt.preaudit.module.boq.entity.BoqFixedSegment;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingEditMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMatchMapper;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMergeMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqFixedSegmentMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqItemMapper;
 import com.zjlt.preaudit.module.boq.parser.BoqExcelParser;
@@ -48,6 +52,8 @@ public class BoqService {
 
     private final BoqItemMapper boqItemMapper;
     private final BoqDrawingMatchMapper drawingMatchMapper;
+    private final BoqDrawingMergeMapper drawingMergeMapper;
+    private final BoqDrawingEditMapper drawingEditMapper;
     private final BoqFixedSegmentMapper fixedSegmentMapper;
     private final ProjectMapper projectMapper;
     private final RuleQuotaMapper ruleQuotaMapper;
@@ -255,8 +261,7 @@ public class BoqService {
             feeItem.setSourceSheet("取费规则");
             feeItem.setItemCode(line.feeCode());
             feeItem.setItemName(TextUtil.truncate(line.feeName(), 250));
-            feeItem.setFeatureDesc(line.baseFormula() + "（基数 " + line.base().toPlainString() + " × 费率 "
-                    + line.rate().multiply(BigDecimal.valueOf(100)).stripTrailingZeros().toPlainString() + "%）");
+            feeItem.setFeatureDesc(feeFeature(line));
             feeItem.setUnit("元");
             feeItem.setQuantity(BigDecimal.ONE);
             feeItem.setUnitPrice(line.amount());
@@ -266,6 +271,81 @@ public class BoqService {
             created++;
         }
         return created;
+    }
+
+    /** 取费行特征：基数公式 + 基数 × 费率，与导入时写入的口径一致 */
+    private String feeFeature(CheckDtos.FeeLine line) {
+        return line.baseFormula() + "（基数 " + line.base().toPlainString() + " × 费率 "
+                + line.rate().multiply(BigDecimal.valueOf(100)).stripTrailingZeros().toPlainString() + "%）";
+    }
+
+    /**
+     * 清单行改动后重算规则取费行：取费金额是「基数 × 费率」算出来的，
+     * 数量或单价一改基数就变，留着旧金额会让顶部「取费合计 / 清单合计」与新数据脱节。
+     * 只重算 FEE 行；其他费与定额法补差是按表五、表二口径拟合的差额，不随行金额联动。
+     */
+    private void refreshFeeRows(Project project, Long projectId) {
+        List<RuleFee> fees = ruleService.listEnabledFees(project.getEngType());
+        if (fees.isEmpty()) {
+            return;
+        }
+        List<BoqItem> items = boqItemMapper.selectList(Wrappers.<BoqItem>lambdaQuery()
+                        .eq(BoqItem::getProjectId, projectId).orderByAsc(BoqItem::getRowNo))
+                .stream().filter(i -> !Dict.BOQ_FEE.equals(i.getItemType())).toList();
+        CheckDtos.FeeResult result = feeCheckService.check(project, items,
+                ruleService.listEnabledQuotas(), fees);
+
+        // 同一 feeCode 正常只有一行；历史脏数据多行时保留首行、其余删掉
+        Map<String, List<BoqItem>> feeRows = new java.util.LinkedHashMap<>();
+        for (BoqItem row : boqItemMapper.selectList(Wrappers.<BoqItem>lambdaQuery()
+                .eq(BoqItem::getProjectId, projectId)
+                .eq(BoqItem::getItemType, Dict.BOQ_FEE)
+                .orderByAsc(BoqItem::getRowNo))) {
+            feeRows.computeIfAbsent(TextUtil.nullToEmpty(row.getItemCode()), k -> new ArrayList<>()).add(row);
+        }
+        int maxRowNo = items.stream().map(BoqItem::getRowNo)
+                .filter(java.util.Objects::nonNull).max(Integer::compareTo).orElse(items.size());
+        java.util.Set<String> applied = new java.util.HashSet<>();
+        for (CheckDtos.FeeLine line : result.lines()) {
+            String code = TextUtil.nullToEmpty(line.feeCode());
+            List<BoqItem> rows = feeRows.getOrDefault(code, List.of());
+            applied.add(code);
+            // 基数变化后取费核算为 0 的费用行没有保留意义
+            if (line.amount() == null || line.amount().compareTo(BigDecimal.ZERO) == 0) {
+                rows.forEach(r -> boqItemMapper.deleteById(r.getId()));
+                continue;
+            }
+            if (rows.isEmpty()) {
+                BoqItem feeItem = new BoqItem();
+                feeItem.setProjectId(projectId);
+                feeItem.setRowNo(++maxRowNo);
+                feeItem.setItemType(Dict.BOQ_FEE);
+                feeItem.setSourceSheet("取费规则");
+                feeItem.setItemCode(line.feeCode());
+                feeItem.setItemName(TextUtil.truncate(line.feeName(), 250));
+                feeItem.setFeatureDesc(feeFeature(line));
+                feeItem.setUnit("元");
+                feeItem.setQuantity(BigDecimal.ONE);
+                feeItem.setUnitPrice(line.amount());
+                feeItem.setTotalPrice(line.amount());
+                feeItem.setEngType(project.getEngType());
+                boqItemMapper.insert(feeItem);
+                continue;
+            }
+            BoqItem first = rows.get(0);
+            first.setItemName(TextUtil.truncate(line.feeName(), 250));
+            first.setFeatureDesc(feeFeature(line));
+            first.setUnitPrice(line.amount());
+            first.setTotalPrice(line.amount());
+            boqItemMapper.updateById(first);
+            rows.stream().skip(1).forEach(r -> boqItemMapper.deleteById(r.getId()));
+        }
+        // 规则停用或改编码后遗留的费用行已无核算依据，一并清掉，避免重复计费
+        feeRows.forEach((code, rows) -> {
+            if (!applied.contains(code)) {
+                rows.forEach(r -> boqItemMapper.deleteById(r.getId()));
+            }
+        });
     }
 
     public PageResult<BoqDtos.ItemVO> page(Long projectId, String keyword, long page, long size) {
@@ -304,6 +384,10 @@ public class BoqService {
         // 清单整体替换后行 id 全变，人工匹配结论一并清掉
         drawingMatchMapper.delete(Wrappers.<BoqDrawingMatch>lambdaQuery()
                 .eq(BoqDrawingMatch::getProjectId, projectId));
+        drawingMergeMapper.delete(Wrappers.<BoqDrawingMerge>lambdaQuery()
+                .eq(BoqDrawingMerge::getProjectId, projectId));
+        drawingEditMapper.delete(Wrappers.<BoqDrawingEdit>lambdaQuery()
+                .eq(BoqDrawingEdit::getProjectId, projectId));
         boqItemMapper.delete(Wrappers.<BoqItem>lambdaQuery().eq(BoqItem::getProjectId, projectId));
         fixedSegmentMapper.delete(Wrappers.<BoqFixedSegment>lambdaQuery().eq(BoqFixedSegment::getProjectId, projectId));
         issueMapper.delete(Wrappers.<Issue>lambdaQuery().eq(Issue::getProjectId, projectId));
@@ -400,6 +484,139 @@ public class BoqService {
         drawingMatchMapper.delete(Wrappers.<BoqDrawingMatch>lambdaQuery()
                 .eq(BoqDrawingMatch::getProjectId, projectId)
                 .eq(BoqDrawingMatch::getBoqItemId, boqItemId));
+    }
+
+    /** 图纸材料人工合并结论：成员键 → 合并组 */
+    public List<BoqDtos.MaterialMergeVO> listDrawingMerges(Long projectId) {
+        return drawingMergeMapper.selectList(Wrappers.<BoqDrawingMerge>lambdaQuery()
+                        .eq(BoqDrawingMerge::getProjectId, projectId))
+                .stream()
+                .map(m -> new BoqDtos.MaterialMergeVO(m.getMemberKey(), m.getGroupKey(), m.getDisplayName()))
+                .toList();
+    }
+
+    /**
+     * 保存一个合并组：先把这批成员原有的合并记录撤掉（一个材料只能在一个组里），
+     * 再按成员逐条写入，组内共享 groupKey 与展示名。
+     */
+    @Transactional
+    public void saveDrawingMerges(Long projectId, BoqDtos.MaterialMergeReq req) {
+        if (req == null || !StringUtils.hasText(req.groupKey())
+                || req.memberKeys() == null || req.memberKeys().size() < 2) {
+            throw new BizException("合并至少需要两条材料");
+        }
+        List<String> keys = req.memberKeys().stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (keys.size() < 2) {
+            throw new BizException("合并至少需要两条不同的材料");
+        }
+        drawingMergeMapper.delete(Wrappers.<BoqDrawingMerge>lambdaQuery()
+                .eq(BoqDrawingMerge::getProjectId, projectId)
+                .in(BoqDrawingMerge::getMemberKey, keys)
+                .or()
+                .eq(BoqDrawingMerge::getProjectId, projectId)
+                .eq(BoqDrawingMerge::getGroupKey, req.groupKey()));
+        for (String key : keys) {
+            BoqDrawingMerge merge = new BoqDrawingMerge();
+            merge.setProjectId(projectId);
+            merge.setGroupKey(req.groupKey().trim());
+            merge.setDisplayName(req.displayName() == null ? null : req.displayName().trim());
+            merge.setMemberKey(key);
+            drawingMergeMapper.insert(merge);
+        }
+    }
+
+    /** 拆分合并组：整组删除，成员恢复为独立材料 */
+    @Transactional
+    public void deleteDrawingMerges(Long projectId, String groupKey) {
+        if (!StringUtils.hasText(groupKey)) {
+            return;
+        }
+        drawingMergeMapper.delete(Wrappers.<BoqDrawingMerge>lambdaQuery()
+                .eq(BoqDrawingMerge::getProjectId, projectId)
+                .eq(BoqDrawingMerge::getGroupKey, groupKey));
+    }
+
+    /** 编辑清单行：名称/规格/单位/数量/单价，合价按数量 × 单价重算 */
+    @Transactional
+    public void updateItem(Long projectId, Long itemId, BoqDtos.ItemEditReq req) {
+        BoqItem item = boqItemMapper.selectById(itemId);
+        if (item == null || !projectId.equals(item.getProjectId())) {
+            throw new BizException("清单行不存在");
+        }
+        if (req == null) {
+            return;
+        }
+        if (StringUtils.hasText(req.itemName())) {
+            item.setItemName(req.itemName().trim());
+        }
+        if (req.featureDesc() != null) {
+            item.setFeatureDesc(req.featureDesc());
+        }
+        if (req.unit() != null) {
+            item.setUnit(req.unit());
+        }
+        BigDecimal qty = req.quantity() != null ? req.quantity() : item.getQuantity();
+        BigDecimal price = req.unitPrice() != null ? req.unitPrice() : item.getUnitPrice();
+        if (qty != null && qty.compareTo(BigDecimal.ZERO) < 0) {
+            throw new BizException("数量不能为负数");
+        }
+        item.setQuantity(qty);
+        item.setUnitPrice(price);
+        if (qty != null && price != null) {
+            item.setTotalPrice(qty.multiply(price).setScale(2, RoundingMode.HALF_UP));
+        }
+        boqItemMapper.updateById(item);
+        // 数量/单价变了，取费行的「基数 × 费率」跟着变，不重算就会留下旧的取费合计
+        if (!Dict.BOQ_FEE.equals(item.getItemType())) {
+            Project project = projectMapper.selectById(projectId);
+            if (project != null) {
+                refreshFeeRows(project, projectId);
+            }
+        }
+    }
+
+    /** 图纸材料的人工编辑结论：材料键 → 覆盖后的名称/规格/单位/数量 */
+    public List<BoqDtos.MaterialEditVO> listDrawingEdits(Long projectId) {
+        return drawingEditMapper.selectList(Wrappers.<BoqDrawingEdit>lambdaQuery()
+                        .eq(BoqDrawingEdit::getProjectId, projectId))
+                .stream()
+                .map(e -> new BoqDtos.MaterialEditVO(e.getMaterialKey(), e.getName(), e.getSpec(),
+                        e.getUnit(), e.getQuantity()))
+                .toList();
+    }
+
+    /** 保存材料编辑：同一材料键只保留一条，重复保存即覆盖 */
+    @Transactional
+    public void saveDrawingEdit(Long projectId, BoqDtos.MaterialEditReq req) {
+        if (req == null || !StringUtils.hasText(req.materialKey())) {
+            throw new BizException("材料标识不能为空");
+        }
+        drawingEditMapper.delete(Wrappers.<BoqDrawingEdit>lambdaQuery()
+                .eq(BoqDrawingEdit::getProjectId, projectId)
+                .eq(BoqDrawingEdit::getMaterialKey, req.materialKey()));
+        BoqDrawingEdit edit = new BoqDrawingEdit();
+        edit.setProjectId(projectId);
+        edit.setMaterialKey(req.materialKey());
+        edit.setName(req.name());
+        edit.setSpec(req.spec());
+        edit.setUnit(req.unit());
+        edit.setQuantity(req.quantity());
+        drawingEditMapper.insert(edit);
+    }
+
+    /** 恢复图纸材料的原始解析结果 */
+    @Transactional
+    public void deleteDrawingEdit(Long projectId, String materialKey) {
+        if (!StringUtils.hasText(materialKey)) {
+            return;
+        }
+        drawingEditMapper.delete(Wrappers.<BoqDrawingEdit>lambdaQuery()
+                .eq(BoqDrawingEdit::getProjectId, projectId)
+                .eq(BoqDrawingEdit::getMaterialKey, materialKey));
     }
 
     public int count(Long projectId) {

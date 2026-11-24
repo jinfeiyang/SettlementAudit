@@ -412,6 +412,8 @@ public class BoqExcelParser {
         }
         int candidates = 0;
         String itemType = Dict.BOQ_SUPPLY_MATERIAL;
+        // 已套用表七固定单价法施工费的芯数：同芯数多行（光缆/防鼠光缆）只计一次
+        java.util.Set<Integer> fixedUsedCores = new java.util.HashSet<>();
         for (int i = header + 1; i < rows.size(); i++) {
             List<String> row = rows.get(i);
             String col0 = normalize(ExcelUtil.cell(row, 0));
@@ -432,10 +434,14 @@ public class BoqExcelParser {
             if (name == null || isNoise(name)) {
                 continue;
             }
-            BigDecimal qty = TextUtil.firstNumber(ExcelUtil.cell(row, 7));  // 实用量
-            if (qty == null) {
-                qty = TextUtil.firstNumber(ExcelUtil.cell(row, 5));         // 退回领出量
+            // 数量取表八实用量；实用量单元格是公式读不到值时，用「领出量 − 剩余量」算出来
+            BigDecimal issued = TextUtil.firstNumber(ExcelUtil.cell(row, 5));
+            BigDecimal remain = TextUtil.firstNumber(ExcelUtil.cell(row, 9));
+            BigDecimal used = TextUtil.firstNumber(ExcelUtil.cell(row, 7));
+            if (used == null && issued != null && remain != null) {
+                used = issued.subtract(remain);
             }
+            BigDecimal qty = used != null ? used : issued;
             if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
@@ -445,10 +451,11 @@ public class BoqExcelParser {
             String spec = ExcelUtil.cell(row, 2);
             String feature = supplyFeature(spec, ExcelUtil.cell(row, 5), ExcelUtil.cell(row, 9));
 
-            // 固定单价法只适用于表八「甲供材料」段的光缆行：表七本就是光缆敷设基准价。
-            // 必须同时限定类别和名称，否则「光缆交接箱」「ODF配件」等甲供设备行的规格里
-            // 也带芯数，会被错误套上同一笔施工费，造成重复计价。
-            boolean opticalCable = Dict.BOQ_SUPPLY_MATERIAL.equals(itemType) && name.contains("光缆");
+            // 固定单价法只适用于表八「甲供材料」段的光缆本体：表七本就是光缆敷设基准价。
+            // 名称必须以「光缆」结尾，「光缆分线箱」「光缆交接箱」这类设备行不套用，
+            // 否则同一笔施工费会被重复计入；表七按芯数汇总、不区分型号，
+            // 同芯数只认第一行（如「光缆」与「防鼠光缆」同为 24 芯，只计一次）。
+            boolean opticalCable = Dict.BOQ_SUPPLY_MATERIAL.equals(itemType) && name.endsWith("光缆");
             if (opticalCable && !fixedByCore.isEmpty()) {
                 Integer core = extractCore(spec, name);
                 if (core != null) {
@@ -459,9 +466,12 @@ public class BoqExcelParser {
                             break;
                         }
                     }
-                    if (hit != null) {
+                    // 同一芯数的表七汇总只能落到一行上，防止重复计费
+                    if (hit != null && !fixedUsedCores.contains(new BigDecimal(hit.getKey()).intValue())) {
+                        fixedUsedCores.add(new BigDecimal(hit.getKey()).intValue());
                         BigDecimal[] v = hit.getValue();
-                        qty = v[0];                                   // 敷设长度合计
+                        // 数量保留表八实用量（领出 − 剩余）：表七长度合计是敷设长度，
+                        // 和领用量同口径、不扣剩余，不能直接当结算数量
                         amount = v[1].setScale(2, RoundingMode.HALF_UP);
                         price = qty.compareTo(BigDecimal.ZERO) > 0
                                 ? amount.divide(qty, 2, RoundingMode.HALF_UP) : amount;
