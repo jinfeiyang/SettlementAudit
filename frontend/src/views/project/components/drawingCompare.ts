@@ -1,4 +1,4 @@
-import type { BoqItemVO } from '@/api'
+import type { BoqItemVO, MaterialMergeVO } from '@/api'
 import {
   charOverlap,
   featureConflicts,
@@ -184,6 +184,8 @@ export interface DrawingMaterial {
   files: string[]
   /** 出现在哪几张图上，按图纸顺序 */
   sources: DrawingSource[]
+  /** 人工合并时组内成员的原名称（未合并时为空） */
+  aliases?: string[]
 }
 
 /** 单张图纸的解析结果（materialSummary + 材料表明细 + 图框） */
@@ -434,6 +436,139 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
   return [...merged.values()].sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name, 'zh-CN'))
 }
 
+/** 人工合并组：同物异名的多条材料合成一行参与匹配 */
+export interface MaterialMergeGroup {
+  groupKey: string
+  displayName?: string | null
+  memberKeys: string[]
+}
+
+/** 图纸材料的人工编辑：材料键不变，只覆盖展示字段与数量 */
+export interface MaterialEdit {
+  materialKey: string
+  name?: string | null
+  spec?: string | null
+  unit?: string | null
+  quantity?: number | null
+}
+
+/**
+ * 叠加人工编辑：按材料键覆盖名称/规格/单位/数量。
+ * 材料键保持不变，已有匹配、合并组不会因为改名而断开关联。
+ */
+export function applyMaterialEdits(
+  materials: DrawingMaterial[],
+  edits: MaterialEdit[],
+): DrawingMaterial[] {
+  if (!edits.length) {
+    return materials
+  }
+  const byKey = new Map(edits.map((edit) => [edit.materialKey, edit]))
+  materials.forEach((material) => {
+    const edit = byKey.get(material.key)
+    if (!edit) {
+      return
+    }
+    if (edit.name?.trim()) {
+      material.name = edit.name.trim()
+    }
+    if (edit.spec !== null && edit.spec !== undefined) {
+      material.spec = edit.spec
+    }
+    if (edit.unit !== null && edit.unit !== undefined) {
+      material.unit = edit.unit
+    }
+    if (edit.quantity !== null && edit.quantity !== undefined) {
+      material.quantity = edit.quantity
+      // 人工改过数量后，不再按图纸分项累加，公式直接展示修正值
+      material.quantityParts = { 人工修正: edit.quantity }
+    }
+  })
+  return materials
+}
+
+/** 后端记录（一个成员一条）按 groupKey 聚合成分组 */
+export function toMergeGroups(rows: MaterialMergeVO[]): MaterialMergeGroup[] {
+  const groups = new Map<string, MaterialMergeGroup>()
+  rows.forEach((row) => {
+    const exist = groups.get(row.groupKey)
+    if (exist) {
+      if (!exist.memberKeys.includes(row.memberKey)) {
+        exist.memberKeys.push(row.memberKey)
+      }
+      return
+    }
+    groups.set(row.groupKey, {
+      groupKey: row.groupKey,
+      displayName: row.displayName,
+      memberKeys: [row.memberKey],
+    })
+  })
+  return [...groups.values()].filter((group) => group.memberKeys.length > 1)
+}
+
+/**
+ * 叠加人工合并：组内材料合成一行，数量按分项相加，来源图页合并，原名保留在 aliases。
+ * 合并后的行用 groupKey 作 key，后续自动匹配、人工匹配与数量对比都按合并行计算。
+ */
+export function applyMaterialMerges(
+  materials: DrawingMaterial[],
+  groups: MaterialMergeGroup[],
+  fixes?: QuantityFixes,
+): DrawingMaterial[] {
+  if (!groups.length) {
+    return materials
+  }
+  const groupByMember = new Map<string, MaterialMergeGroup>()
+  groups.forEach((group) => group.memberKeys.forEach((key) => groupByMember.set(key, group)))
+  const mergedByGroup = new Map<string, DrawingMaterial>()
+  const out: DrawingMaterial[] = []
+  materials.forEach((material) => {
+    const group = groupByMember.get(material.key)
+    if (!group) {
+      out.push(material)
+      return
+    }
+    const exist = mergedByGroup.get(group.groupKey)
+    if (!exist) {
+      const row: DrawingMaterial = {
+        ...material,
+        key: group.groupKey,
+        name: group.displayName?.trim() || material.name,
+        quantityParts: { ...material.quantityParts },
+        files: [...material.files],
+        sources: [...material.sources],
+        aliases: [material.name],
+      }
+      // 合并行沿用组内成员的数量修正，列表上的「已改」标记与换算公式都不丢
+      if (fixes) {
+        fixes[row.key] = { ...(fixes[row.key] ?? {}), ...(fixes[material.key] ?? {}) }
+      }
+      mergedByGroup.set(group.groupKey, row)
+      out.push(row)
+      return
+    }
+    if (!exist.aliases!.includes(material.name)) {
+      exist.aliases!.push(material.name)
+    }
+    exist.quantity = round(exist.quantity + material.quantity)
+    Object.entries(material.quantityParts).forEach(([label, value]) => {
+      exist.quantityParts[label] = round((exist.quantityParts[label] ?? 0) + value)
+    })
+    material.files.forEach((file) => {
+      if (!exist.files.includes(file)) {
+        exist.files.push(file)
+      }
+    })
+    exist.fileCount = exist.files.length
+    mergeSources(exist.sources, material.sources)
+    if (fixes) {
+      Object.assign(fixes[exist.key], fixes[material.key] ?? {})
+    }
+  })
+  return out
+}
+
 /** 材料表编号 → 图框 → 出处；同一张图上的多张表并成一条 */
 function sourcesOf(
   tableNos: number[] | undefined,
@@ -642,8 +777,7 @@ function link(row: DrawingRow, item: BoqItemVO, score: number) {
 }
 
 /** 人工匹配结论：MATCH 指定图纸材料；UNMATCH 取消匹配（该清单行不再关联任何材料） */
-export interface MatchOverride {
-  boqItemId: number
+export interface MatchOverride {  boqItemId: number
   drawingKey?: string | null
   manualType: 'MATCH' | 'UNMATCH'
 }
@@ -706,12 +840,22 @@ export function applyMatchOverrides(
   return { rows, byBoqId, nearestByBoqId: result.nearestByBoqId, matched, unmatched: rows.length - matched }
 }
 
-/** 数量对比结论：一致 / 图纸偏大 / 图纸偏小 / 无法比较（单位不可换算） */
-export function diffState(rate?: number | null): 'CONSISTENT' | 'MORE' | 'LESS' | 'NA' {
+/**
+ * 数量对比结论：一致 / 图纸偏大 / 图纸偏小 / 无法比较（单位不可换算）。
+ *
+ * 判定「一致」要同时满足：偏差 < 0.5% **且** 绝对差 < 0.5 个计量单位。
+ * 只看百分比会把大数量下的真实差异吞掉——352 米改成 353 米只差 0.28%，
+ * 但那确实是 1 米，改完数量界面却还写「数量一致」，看着像没同步。
+ */
+export function diffState(
+  rate?: number | null,
+  diff?: number | null,
+): 'CONSISTENT' | 'MORE' | 'LESS' | 'NA' {
   if (rate === null || rate === undefined) {
     return 'NA'
   }
-  if (Math.abs(rate) < 0.5) {
+  const absDiff = diff === null || diff === undefined ? 0 : Math.abs(diff)
+  if (Math.abs(rate) < 0.5 && absDiff < 0.5) {
     return 'CONSISTENT'
   }
   return rate > 0 ? 'MORE' : 'LESS'

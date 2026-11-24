@@ -19,6 +19,8 @@
           {{ opt.label }}
           <el-tag v-if="opt.value === current" size="small" type="success" effect="plain">当前</el-tag>
         </div>
+        <!-- 规格 / 型号 / 项目特征：同一名称下就差这一项，匹配前必须看得到 -->
+        <div v-if="opt.meta" class="option-meta">{{ opt.meta }}</div>
         <div v-if="opt.desc" class="option-desc">{{ opt.desc }}</div>
       </div>
       <div v-if="!filtered.length" class="empty">没有可选项</div>
@@ -39,6 +41,8 @@ import { computed, ref } from 'vue'
 interface MatchOption {
   value: string
   label: string
+  /** 规格 / 型号 / 项目特征，单独一行展示，长文本自动换行 */
+  meta?: string
   desc?: string
 }
 
@@ -66,7 +70,10 @@ const filtered = computed(() => {
   if (!kw) {
     return props.options
   }
-  return props.options.filter((opt) => opt.label.includes(kw) || (opt.desc ?? '').includes(kw))
+  return props.options.filter(
+    (opt) =>
+      opt.label.includes(kw) || (opt.meta ?? '').includes(kw) || (opt.desc ?? '').includes(kw),
+  )
 })
 
 function onOpen() {
@@ -106,6 +113,15 @@ function onOpen() {
   align-items: center;
   gap: 8px;
   font-size: 13px;
+}
+
+.option-meta {
+  margin-top: 2px;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-line;
+  word-break: break-all;
 }
 
 .option-desc {

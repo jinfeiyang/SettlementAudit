@@ -22,6 +22,15 @@
       <el-checkbox v-model="unmatchedOnly" size="small">只看清单未匹配</el-checkbox>
       <el-button type="primary" :loading="drawingLoading" @click="refreshAll">查询</el-button>
       <el-button @click="resetQuery">重置</el-button>
+      <el-button type="primary" plain :disabled="selectedRows.length < 2" @click="openMerge">
+        合并为一项
+      </el-button>
+      <el-button
+        :disabled="selectedRows.length !== 1 || !selectedRows[0]?.aliases?.length"
+        @click="unmerge"
+      >
+        取消合并
+      </el-button>
       <span class="summary">{{ drawingSummaryText }}</span>
       <el-button v-if="!drawingMaterials.length && !drawingLoading" @click="emit('go', 'files')">
         上传图纸
@@ -36,8 +45,22 @@
       :row-class-name="rowClass"
       empty-text="暂无图纸清单：请先在「资料与解析」上传并解析竣工图 DXF/DWG"
       :height="tableHeight"
+      @selection-change="onSelectionChange"
     >
-      <el-table-column prop="name" label="图纸名称" width="220" class-name="wrap-cell" />
+      <el-table-column type="selection" width="42" />
+      <el-table-column prop="name" label="图纸名称" width="220" class-name="wrap-cell">
+        <template #default="{ row }">
+          {{ row.name }}
+          <el-tag
+            v-if="row.aliases?.length"
+            type="info"
+            size="small"
+            effect="plain"
+            class="merge-tag"
+            :title="`已合并：${row.aliases.join('、')}`"
+          >合并 {{ row.aliases.length }} 项</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="规格" width="160" align="center" class-name="wrap-cell">
         <template #default="{ row }">{{ row.spec || '-' }}</template>
       </el-table-column>
@@ -94,15 +117,16 @@
               title="点击跳转到工程量清单并定位对应行"
               @click="locateBoq(row.match)"
             >
-              {{ diffLabel(row.diffRate) }}
+              {{ diffLabel(row.diffRate, row.diff) }}
             </div>
           </template>
           <span v-else class="muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="180" fixed="right" class-name="action-cell">
+      <el-table-column label="操作" width="200" fixed="right" class-name="action-cell">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button v-if="row.match" link type="danger" @click="unmatchRow(row)">取消匹配</el-button>
           <el-button v-else link type="primary" @click="openMatch(row)">手动匹配</el-button>
         </template>
@@ -130,10 +154,65 @@
       @unmatch="matchRow && unmatchRow(matchRow)"
     />
 
+    <el-dialog v-model="mergeVisible" title="合并图纸材料" width="560px" align-center>
+      <p class="merge-hint">
+        同一种材料在图纸里可能写成不同名称（如「安装ODF」「新装ODF」）。
+        合并后按一行参与清单匹配，数量按各分项相加。
+      </p>
+      <el-descriptions :column="1" border size="small">
+        <el-descriptions-item v-for="row in selectedRows" :key="row.key" :label="row.name">
+          {{ row.spec || '无规格' }} · {{ qty(row.quantity) }}{{ row.unit || '' }}
+        </el-descriptions-item>
+      </el-descriptions>
+      <div class="merge-form">
+        <span class="merge-label">合并后名称</span>
+        <el-input v-model="mergeName" placeholder="如：ODF" clearable />
+      </div>
+      <div v-if="mergeUnitMixed" class="merge-warn">
+        选中的材料单位不一致，合并后数量仍会直接相加，请先确认是同一件材料。
+      </div>
+      <template #footer>
+        <el-button @click="mergeVisible = false">取消</el-button>
+        <el-button type="primary" :loading="merging" @click="confirmMerge">合并</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="editVisible" title="编辑图纸材料" width="540px" align-center>
+      <el-form label-width="90px">
+        <el-form-item label="名称" required>
+          <el-input v-model="editForm.name" maxlength="200" />
+        </el-form-item>
+        <el-form-item label="规格 / 型号">
+          <el-input v-model="editForm.spec" maxlength="200" />
+        </el-form-item>
+        <el-form-item label="单位">
+          <el-input v-model="editForm.unit" maxlength="20" style="width: 160px" />
+        </el-form-item>
+        <el-form-item label="图纸数量">
+          <el-input-number
+            v-model="editForm.quantity"
+            :precision="6"
+            :step="1"
+            :min="0"
+            controls-position="right"
+            style="width: 200px"
+          />
+        </el-form-item>
+      </el-form>
+      <p class="edit-tip">材料标识不变，编辑后与清单的匹配关系保留，数量对比按新数据重算。</p>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="detailVisible" title="图纸材料详情" width="720px" align-center>
       <template v-if="detailRow">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="图纸名称" :span="2">{{ detailRow.name }}</el-descriptions-item>
+          <el-descriptions-item v-if="detailRow.aliases?.length" label="包含名称" :span="2">
+            {{ detailRow.aliases.join('、') }}
+          </el-descriptions-item>
           <el-descriptions-item label="规格">{{ detailRow.spec || '-' }}</el-descriptions-item>
           <el-descriptions-item label="单位">{{ detailRow.unit || '-' }}</el-descriptions-item>
           <el-descriptions-item label="图纸数量">
@@ -185,7 +264,7 @@
               v-if="detailRow.diffRate !== null && detailRow.diffRate !== undefined"
               :class="['diff', detailRow.diffRate > 0 ? 'diff-more' : 'diff-less']"
             >
-              {{ diffLabel(detailRow.diffRate) }}
+              {{ diffLabel(detailRow.diffRate, detailRow.diff) }}
             </span>
             <span v-else class="muted">单位不可换算，无法比较数量</span>
           </el-descriptions-item>
@@ -204,6 +283,8 @@ import { useTableHeight } from '@/utils/useTableHeight'
 import DrawingJump from './DrawingJump.vue'
 import {
   applyMatchOverrides,
+  applyMaterialEdits,
+  applyMaterialMerges,
   applyQuantityFixes,
   compareDrawingWithBoq,
   diffState,
@@ -212,6 +293,7 @@ import {
   mergeQuantityFixes,
   quantityFormula,
   quantityFormulaData,
+  toMergeGroups,
   type QuantityFixes,
   type DrawingFrameItem,
   type DrawingMaterial,
@@ -219,6 +301,8 @@ import {
   type DrawingRow,
   type DrawingTableItem,
   type MatchOverride,
+  type MaterialEdit,
+  type MaterialMergeGroup,
 } from './drawingCompare'
 import MatchDialog from './MatchDialog.vue'
 
@@ -226,6 +310,8 @@ import MatchDialog from './MatchDialog.vue'
 interface MatchOption {
   value: string
   label: string
+  /** 规格 / 项目特征：同一名称下（如各芯数光缆）差别全在这里 */
+  meta?: string
   desc?: string
 }
 
@@ -246,6 +332,15 @@ const emit = defineEmits<{
 
 const all = ref<BoqItemVO[]>([])
 const drawingMaterials = ref<DrawingMaterial[]>([])
+/** 图纸材料的人工合并组：同物异名的多条材料合成一行后再参与匹配 */
+const mergeGroups = ref<MaterialMergeGroup[]>([])
+/** 图纸材料的人工编辑：材料键不变，覆盖名称/规格/单位/数量 */
+const materialEdits = ref<MaterialEdit[]>([])
+/** 表格勾选的行，用于合并/取消合并 */
+const selectedRows = ref<DrawingRow[]>([])
+const mergeVisible = ref(false)
+const mergeName = ref('')
+const merging = ref(false)
 /** 人工修正的数量分项：材料 key → 分项键 → 数值 */
 const quantityFixes = ref<QuantityFixes>({})
 const drawingLoading = ref(false)
@@ -289,6 +384,116 @@ function openDetail(row: DrawingRow) {
   detailVisible.value = true
 }
 
+/** 编辑图纸材料：材料键不变，改完匹配关联与清单侧对比同步刷新 */
+const editVisible = ref(false)
+const editSaving = ref(false)
+const editForm = ref({ key: '', name: '', spec: '', unit: '', quantity: 0 })
+
+function openEdit(row: DrawingRow) {
+  editForm.value = {
+    key: row.key,
+    name: row.name ?? '',
+    spec: row.spec ?? '',
+    unit: row.unit ?? '',
+    quantity: Number(row.quantity ?? 0),
+  }
+  editVisible.value = true
+}
+
+async function saveEdit() {
+  if (!editForm.value.name.trim()) {
+    ElMessage.warning('请填写材料名称')
+    return
+  }
+  editSaving.value = true
+  try {
+    await boqApi.saveDrawingEdit(props.projectId, {
+      materialKey: editForm.value.key,
+      name: editForm.value.name.trim(),
+      spec: editForm.value.spec,
+      unit: editForm.value.unit,
+      quantity: editForm.value.quantity,
+    })
+    editVisible.value = false
+    // 两侧同时重算：清单侧的数量对比与匹配结论都按编辑后的材料数据刷新
+    await refreshAll()
+    emit('changed')
+    ElMessage.success('已保存，清单侧匹配与数量对比已同步')
+  } finally {
+    editSaving.value = false
+  }
+}
+
+/** 合并行不能再参与合并，避免套娃；拆分只需选中合并行即可 */
+function onSelectionChange(rows: DrawingRow[]) {
+  selectedRows.value = rows
+}
+
+/** 单位不一致时提示：合并只按同一种材料判断，系统不替人改口径 */
+const mergeUnitMixed = computed(
+  () => new Set(selectedRows.value.map((row) => (row.unit || '').trim())).size > 1,
+)
+
+/** 默认显示名取最短的那个名称（「安装ODF子框」「安装ODF」「新装ODF」→ ODF 最短的是「安装ODF」） */
+function openMerge() {
+  if (selectedRows.value.length < 2) {
+    return
+  }
+  if (selectedRows.value.some((row) => row.aliases?.length)) {
+    ElMessage.warning('已是合并项的材料不能再参与合并，请先取消合并')
+    return
+  }
+  const shortest = [...selectedRows.value].sort((a, b) => a.name.length - b.name.length)[0]
+  mergeName.value = shortest.name
+  mergeVisible.value = true
+}
+
+async function confirmMerge() {
+  if (selectedRows.value.length < 2) {
+    return
+  }
+  merging.value = true
+  try {
+    const groupKey = `merge:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    const name = mergeName.value.trim() || selectedRows.value[0].name
+    await boqApi.saveDrawingMerges(
+      props.projectId,
+      groupKey,
+      name,
+      selectedRows.value.map((row) => row.key),
+    )
+    mergeVisible.value = false
+    tableRef.value?.clearSelection()
+    await refreshAll()
+    emit('changed')
+    ElMessage.success('已合并，数量与清单匹配按合并结果重算')
+  } finally {
+    merging.value = false
+  }
+}
+
+/** 拆分合并组：成员恢复为独立材料，匹配结果随之重算 */
+async function unmerge() {
+  const row = selectedRows.value[0]
+  if (!row?.aliases?.length) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `取消「${row.name}」的合并？拆分后 ${row.aliases.length} 条材料恢复为独立行，数量不再相加。`,
+      '取消合并',
+      { type: 'warning', confirmButtonText: '取消合并', cancelButtonText: '返回' },
+    )
+  } catch {
+    return
+  }
+  await boqApi.resetDrawingMerges(props.projectId, row.key)
+  tableRef.value?.clearSelection()
+  await refreshAll()
+  emit('changed')
+  ElMessage.success('已拆分合并项')
+}
+
 /** 该材料是否有人工修正过的数量分项，供列表直接提示 */
 function hasFix(key?: string): boolean {
   return !!key && Object.keys(quantityFixes.value[key] ?? {}).length > 0
@@ -325,7 +530,14 @@ const matchOptions = computed<MatchOption[]>(() => {
   return candidates.map((item) => ({
     value: String(item.id),
     label: `第 ${item.rowNo ?? '-'} 行 ${item.itemName}`,
-    desc: `${qty(item.quantity)}${item.unit || ''}${item.itemTypeName ? ' · ' + item.itemTypeName : ''}`,
+    meta: item.featureDesc ? `规格 / 特征：${item.featureDesc}` : '',
+    desc: [
+      `${qty(item.quantity)}${item.unit || ''}`,
+      item.itemTypeName,
+      item.sourceSheet,
+    ]
+      .filter(Boolean)
+      .join(' · '),
   }))
 })
 function openMatch(row: DrawingRow) {
@@ -394,7 +606,7 @@ const drawingView = computed(() => {
   }
   if (diffFilter.value) {
     // 未匹配清单的行没有数量对比结论
-    rows = rows.filter((row) => row.match && diffState(row.diffRate) === diffFilter.value)
+    rows = rows.filter((row) => row.match && diffState(row.diffRate, row.diff) === diffFilter.value)
   }
   return rows
 })
@@ -511,6 +723,9 @@ async function loadDrawings() {
     quantityFixes.value = fixes
     drawingMaterials.value = mergeDrawingMaterials(results)
     applyQuantityFixes(drawingMaterials.value, fixes)
+    applyMaterialEdits(drawingMaterials.value, materialEdits.value)
+    drawingMaterials.value = applyMaterialMerges(drawingMaterials.value, mergeGroups.value, fixes)
+    applyMaterialEdits(drawingMaterials.value, materialEdits.value)
     locateFocus()
   } finally {
     drawingLoading.value = false
@@ -525,7 +740,18 @@ function fallbackOf(row: DrawingMaterial) {
 }
 
 function refreshAll() {
-  return Promise.all([load(), loadDrawings(), reloadOverrides()])
+  return refreshWithMerges()
+}
+
+/** 合并组与人工编辑要先取到，图纸材料汇总后按它们覆盖，再算匹配 */
+async function refreshWithMerges() {
+  const [merges, edits] = await Promise.all([
+    boqApi.drawingMerges(props.projectId),
+    boqApi.drawingEdits(props.projectId),
+  ])
+  mergeGroups.value = toMergeGroups(merges)
+  materialEdits.value = edits
+  await Promise.all([load(), loadDrawings(), reloadOverrides()])
 }
 
 /** 重置查询条件并重新取数 */
@@ -546,11 +772,13 @@ function qty(value?: number | null) {
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
 }
 
-function diffLabel(rate: number) {
-  if (Math.abs(rate) < 0.5) {
+/** 数量差异文案：偏差与绝对差都在容差内才算一致，否则把方向和百分比写出来 */
+function diffLabel(rate: number, diff?: number | null) {
+  if (diffState(rate, diff) === 'CONSISTENT') {
     return '数量一致'
   }
-  return `${rate > 0 ? '图纸偏大' : '图纸偏小'} ${Math.abs(rate).toFixed(1)}%`
+  const pct = Math.abs(rate) < 0.05 ? '<0.1' : Math.abs(rate).toFixed(1)
+  return `${rate > 0 ? '图纸偏大' : '图纸偏小'} ${pct}%`
 }
 
 watch(() => props.refreshKey, () => refreshAll())
@@ -618,6 +846,36 @@ onMounted(refreshAll)
   margin-left: 6px;
   vertical-align: middle;
   white-space: pre-line;
+}
+.merge-tag {
+  margin-left: 6px;
+}
+.merge-hint {
+  margin: 0 0 10px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.merge-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.merge-label {
+  flex: 0 0 auto;
+  color: #606266;
+  font-size: 13px;
+}
+.merge-warn {
+  margin-top: 8px;
+  color: #e6a23c;
+  font-size: 12px;
+}
+.edit-tip {
+  margin: 0;
+  color: #909399;
+  font-size: 12px;
 }
 /* 与工程量清单一致：单元格统一换行，名称列留出内边距 */
 :deep(.el-table .cell) {

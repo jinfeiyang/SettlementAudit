@@ -108,7 +108,7 @@
                   title="点击跳转到图纸清单并定位对应材料"
                   @click="emit('locate-drawing', row.drawing.key)"
                 >
-                  {{ diffLabel(row.drawing.diffRate) }}
+                  {{ diffLabel(row.drawing.diffRate, row.drawing.diff) }}
                 </span>
               </div>
               <DrawingJump
@@ -132,9 +132,10 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right" class-name="action-cell">
+        <el-table-column label="操作" width="200" fixed="right" class-name="action-cell">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <template v-if="!isPricedExtraRow(row) && drawingMaterials.length">
               <el-button v-if="row.drawing" link type="danger" @click="unmatchRow(row)">取消匹配</el-button>
               <el-button v-else link type="primary" @click="openMatch(row)">手动匹配</el-button>
@@ -206,7 +207,7 @@
               v-if="detailRow.drawing.diffRate !== null && detailRow.drawing.diffRate !== undefined"
               :class="['diff', detailRow.drawing.diffRate > 0 ? 'diff-more' : 'diff-less']"
             >
-              {{ diffLabel(detailRow.drawing.diffRate) }}
+              {{ diffLabel(detailRow.drawing.diffRate, detailRow.drawing.diff) }}
             </span>
             <span v-else class="muted">单位不可换算，无法比较数量</span>
           </el-descriptions-item>
@@ -294,6 +295,50 @@
         <el-button @click="detailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="editVisible" title="编辑清单行" width="560px" align-center>
+      <el-form label-width="90px">
+        <el-form-item label="名称" required>
+          <el-input v-model="editForm.itemName" maxlength="200" />
+        </el-form-item>
+        <el-form-item label="规格 / 特征">
+          <el-input v-model="editForm.featureDesc" type="textarea" :rows="2" maxlength="500" />
+        </el-form-item>
+        <el-form-item label="单位">
+          <el-input v-model="editForm.unit" maxlength="20" style="width: 160px" />
+        </el-form-item>
+        <el-form-item label="清单工程量">
+          <el-input-number
+            v-model="editForm.quantity"
+            :precision="6"
+            :step="1"
+            :min="0"
+            controls-position="right"
+            style="width: 200px"
+          />
+        </el-form-item>
+        <el-form-item label="综合单价">
+          <el-input-number
+            v-model="editForm.unitPrice"
+            :precision="2"
+            :step="1"
+            :min="0"
+            controls-position="right"
+            style="width: 200px"
+          />
+        </el-form-item>
+        <el-form-item label="合价">
+          <span>{{ money(editForm.quantity * editForm.unitPrice) }}</span>
+        </el-form-item>
+      </el-form>
+      <p class="edit-tip">
+        保存后合价按数量 × 单价重算，取费行金额与顶部金额汇总同步更新；图纸匹配与数量对比按新数据重算，人工匹配关系保留。
+      </p>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -312,6 +357,8 @@ import {
 } from '@/utils/cableCheck'
 import {
   applyMatchOverrides,
+  applyMaterialEdits,
+  applyMaterialMerges,
   applyQuantityFixes,
   compareDrawingWithBoq,
   diffState,
@@ -320,6 +367,7 @@ import {
   mergeQuantityFixes,
   quantityFormula,
   quantityFormulaData,
+  toMergeGroups,
   type QuantityFixes,
   type DrawingFrameItem,
   type DrawingMaterial,
@@ -327,6 +375,8 @@ import {
   type DrawingRow,
   type DrawingTableItem,
   type MatchOverride,
+  type MaterialEdit,
+  type MaterialMergeGroup,
   type NearestMatch,
 } from './drawingCompare'
 import DrawingJump from './DrawingJump.vue'
@@ -336,6 +386,8 @@ import MatchDialog from './MatchDialog.vue'
 interface MatchOption {
   value: string
   label: string
+  /** 规格 / 型号：同物异名时靠它区分，单独一行完整展示 */
+  meta?: string
   desc?: string
 }
 
@@ -375,6 +427,10 @@ const size = ref(50)
 
 /** 图纸清单：竣工图材料表跨图纸汇总，作为清单的对照侧 */
 const drawingMaterials = ref<DrawingMaterial[]>([])
+/** 图纸材料的人工合并组：同物异名的多条材料合成一行后再参与匹配 */
+const mergeGroups = ref<MaterialMergeGroup[]>([])
+/** 图纸材料的人工编辑：材料键不变，覆盖名称/规格/单位/数量 */
+const materialEdits = ref<MaterialEdit[]>([])
 /** 每张图纸各自的线缆长度：光缆长度核查必须逐图比，不能把多张图合成一个总量 */
 const drawingCableFiles = ref<{ fileName: string; cable: DrawingCable }[]>([])
 const drawingLoading = ref(false)
@@ -411,7 +467,8 @@ const matchOptions = computed<MatchOption[]>(() => {
   }
   return ranked.map((row) => ({
     value: row.key,
-    label: `${row.name}${row.spec ? ' ' + row.spec : ''}`,
+    label: row.name,
+    meta: row.spec ? `规格 / 型号：${row.spec}` : '',
     desc: `图纸 ${qty(row.quantity)}${row.unit || ''} · ${row.files.length} 张图纸${row.match ? ` · 已匹配清单第 ${row.match.rowNo} 行` : ''}`,
   }))
 })
@@ -527,7 +584,7 @@ const filtered = computed(() => {
       }
       const drawing = comparisons.value.byBoqId.get(item.id)
       // 没有匹配到图纸时没有数量对比结论，选任何对比结果都不展示
-      if (!drawing || diffState(drawing.diffRate) !== diffFilter.value) {
+      if (!drawing || diffState(drawing.diffRate, drawing.diff) !== diffFilter.value) {
         return false
       }
     }
@@ -575,6 +632,54 @@ const detailCableRows = computed(() => {
 function openDetail(row: BoqRow) {
   detailRow.value = row
   detailVisible.value = true
+}
+
+/** 编辑清单行：数量/单价改动后合价按数量 × 单价重算 */
+const editVisible = ref(false)
+const editSaving = ref(false)
+const editForm = ref({
+  id: 0,
+  itemName: '',
+  featureDesc: '',
+  unit: '',
+  quantity: 0,
+  unitPrice: 0,
+})
+
+function openEdit(row: BoqRow) {
+  editForm.value = {
+    id: row.id,
+    itemName: row.itemName ?? '',
+    featureDesc: row.featureDesc ?? '',
+    unit: row.unit ?? '',
+    quantity: Number(row.quantity ?? 0),
+    unitPrice: Number(row.unitPrice ?? 0),
+  }
+  editVisible.value = true
+}
+
+async function saveEdit() {
+  if (!editForm.value.itemName.trim()) {
+    ElMessage.warning('请填写清单名称')
+    return
+  }
+  editSaving.value = true
+  try {
+    await boqApi.updateItem(props.projectId, editForm.value.id, {
+      itemName: editForm.value.itemName.trim(),
+      featureDesc: editForm.value.featureDesc,
+      unit: editForm.value.unit,
+      quantity: editForm.value.quantity,
+      unitPrice: editForm.value.unitPrice,
+    })
+    editVisible.value = false
+    // 清单与图纸两侧都重新取数，匹配与数量对比按新数据同步刷新
+    await refreshAll()
+    emit('changed')
+    ElMessage.success('已保存，合价、取费与金额汇总已更新，图纸匹配与数量对比已同步')
+  } finally {
+    editSaving.value = false
+  }
 }
 
 /** 该图纸材料是否有人工修正过的数量分项，供列表直接提示 */
@@ -652,6 +757,9 @@ async function loadDrawings() {
     quantityFixes.value = fixes
     drawingMaterials.value = mergeDrawingMaterials(results)
     applyQuantityFixes(drawingMaterials.value, fixes)
+    applyMaterialEdits(drawingMaterials.value, materialEdits.value)
+    drawingMaterials.value = applyMaterialMerges(drawingMaterials.value, mergeGroups.value, fixes)
+    applyMaterialEdits(drawingMaterials.value, materialEdits.value)
     // 逐张图保留各自的长度，核查时一张图对一次清单，不做跨图合计
     drawingCableFiles.value = results.map((item) => ({
       fileName: item.fileName,
@@ -670,6 +778,13 @@ function fallbackOf(drawing: DrawingRow) {
 }
 
 async function refreshAll() {
+  // 合并组与人工编辑要先取到，图纸材料汇总后按它们覆盖，再算匹配
+  const [merges, edits] = await Promise.all([
+    boqApi.drawingMerges(props.projectId),
+    boqApi.drawingEdits(props.projectId),
+  ])
+  mergeGroups.value = toMergeGroups(merges)
+  materialEdits.value = edits
   await Promise.all([load(), loadDrawings(), reloadOverrides()])
 }
 
@@ -783,12 +898,13 @@ function qty(value?: number | null) {
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
 }
 
-/** 图纸数量相对清单数量的偏差：±0.5% 以内视为一致 */
-function diffLabel(rate: number) {
-  if (Math.abs(rate) < 0.5) {
+/** 图纸数量相对清单数量的偏差：偏差 <0.5% 且绝对差 <0.5 才算一致，否则写出方向和百分比 */
+function diffLabel(rate: number, diff?: number | null) {
+  if (diffState(rate, diff) === 'CONSISTENT') {
     return '数量一致'
   }
-  return `${rate > 0 ? '图纸偏大' : '图纸偏小'} ${Math.abs(rate).toFixed(1)}%`
+  const pct = Math.abs(rate) < 0.05 ? '<0.1' : Math.abs(rate).toFixed(1)
+  return `${rate > 0 ? '图纸偏大' : '图纸偏小'} ${pct}%`
 }
 
 function onSizeChange(next: number) {
@@ -917,6 +1033,11 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 600;
   color: #303133;
+}
+.edit-tip {
+  margin: 0;
+  color: #909399;
+  font-size: 12px;
 }
 .muted {
   color: #a8abb2;

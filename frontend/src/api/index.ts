@@ -134,6 +134,22 @@ export interface MatchOverrideVO {
   manualType: 'MATCH' | 'UNMATCH'
 }
 
+/** 图纸材料人工合并：一个成员一条记录，groupKey 相同为同一合并组 */
+export interface MaterialMergeVO {
+  memberKey: string
+  groupKey: string
+  displayName?: string | null
+}
+
+/** 图纸材料人工编辑：材料键不变，覆盖名称/规格/单位/数量 */
+export interface MaterialEditVO {
+  materialKey: string
+  name?: string | null
+  spec?: string | null
+  unit?: string | null
+  quantity?: number | null
+}
+
 export interface IssueVO {
   id: number
   projectId: number
@@ -291,6 +307,41 @@ export const boqApi = {
   /** 恢复自动匹配 */
   resetDrawingMatch: (projectId: number, boqItemId: number) =>
     request.delete<void>(`/projects/${projectId}/boq/drawing-matches/${boqItemId}`),
+  /** 图纸材料的人工合并结论 */
+  drawingMerges: (projectId: number) =>
+    request.get<MaterialMergeVO[]>(`/projects/${projectId}/boq/drawing-merges`),
+  /** 保存合并组：同物异名的多条材料合并为一行 */
+  saveDrawingMerges: (
+    projectId: number,
+    groupKey: string,
+    displayName: string,
+    memberKeys: string[],
+  ) =>
+    request.post<void>(`/projects/${projectId}/boq/drawing-merges`, {
+      groupKey,
+      displayName,
+      memberKeys,
+    }),
+  /** 拆分合并组 */
+  resetDrawingMerges: (projectId: number, groupKey: string) =>
+    request.delete<void>(`/projects/${projectId}/boq/drawing-merges/group/${encodeURIComponent(groupKey)}`),
+  /** 编辑清单行（合价按数量 × 单价重算） */
+  updateItem: (
+    projectId: number,
+    itemId: number,
+    body: { itemName?: string; featureDesc?: string; unit?: string; quantity?: number; unitPrice?: number },
+  ) => request.put<void>(`/projects/${projectId}/boq/items/${itemId}`, body),
+  /** 图纸材料的人工编辑结论 */
+  drawingEdits: (projectId: number) =>
+    request.get<MaterialEditVO[]>(`/projects/${projectId}/boq/drawing-edits`),
+  /** 保存图纸材料编辑：材料键不变，保持与清单的匹配关联 */
+  saveDrawingEdit: (
+    projectId: number,
+    body: { materialKey: string; name?: string; spec?: string; unit?: string; quantity?: number },
+  ) => request.post<void>(`/projects/${projectId}/boq/drawing-edits`, body),
+  /** 恢复图纸材料的原始解析结果 */
+  resetDrawingEdit: (projectId: number, materialKey: string) =>
+    request.delete<void>(`/projects/${projectId}/boq/drawing-edits/${encodeURIComponent(materialKey)}`),
   template: (projectId: number) =>
     download(`/projects/${projectId}/boq/template`, '工程量清单导入模板.xls'),
 }
