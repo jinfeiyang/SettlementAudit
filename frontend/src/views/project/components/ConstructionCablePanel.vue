@@ -277,19 +277,22 @@ const boqByCore = computed(() => {
 
 /**
  * 施工光缆段看图时用的标红参数：按芯数找到清单对应的光缆行，
- * 用清单行名在 DXF 里匹配材料表文字（和工程量清单侧逻辑一致）。
- * 清单行里"固定单价法施工费（24芯…）"是特征描述，itemName 本身就是材料名。
+ * 用材料名（如「光缆」）+ 完整规格型号（如「GYTS-24B1」）在 DXF 里锁定同一行标红。
+ * 规格必须取全：GYTS-24B1 若截成 GYTS-24B，图上按规格匹配就会落空，
+ * 导致同一张图里 12 芯 / 24 芯两种光缆一起被标红。
  */
 function highlightOf(row: FixedSegmentVO): { highlight: string; spec: string; fallback: string } {
+  const segmentFallback = { highlight: row.segmentName || '', spec: '', fallback: '' }
   if (row.coreCount == null) {
-    return { highlight: row.segmentName || '', spec: '', fallback: '' }
+    return segmentFallback
   }
   const boq = boqByCore.value.get(row.coreCount)
   if (!boq) {
-    return { highlight: row.segmentName || '', spec: '', fallback: '' }
+    return segmentFallback
   }
   const name = boq.itemName || ''
-  const spec = boq.featureDesc?.match(/[A-Z]+G?Y?T?[A-Z]*-\d+[A-Z]*/i)?.[0] || ''
+  // 提取完整规格型号：GYTS-12B1 / GYTS-24B1 / GYXTW-12-9/125 等字母数字与连字符组合
+  const spec = boq.featureDesc?.match(/[A-Z]{2,}[A-Z0-9]*-[A-Z0-9/-]+/i)?.[0]?.trim() || ''
   const fallback = name.replace(/\s*固定单价法施工费.*$/, '').trim() || name
   return { highlight: name, spec, fallback }
 }
@@ -391,14 +394,17 @@ function qty(value?: number | null) {
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 }
 
-/** 段名在图纸标注里命中的页；同一段名共用一份结果 */
+/** 段名在图纸标注里命中的页；同一段名+规格共用一份结果 */
 const hitCache = new Map<string, ReturnType<typeof findSegmentDrawingHits>>()
 function hitsOf(row: FixedSegmentVO) {
   const name = row.segmentName ?? ''
-  let hits = hitCache.get(name)
+  const spec = highlightOf(row).spec
+  const cacheKey = `${name}|${spec}`
+  let hits = hitCache.get(cacheKey)
   if (!hits) {
-    hits = findSegmentDrawingHits(name, labelDocs.value)
-    hitCache.set(name, hits)
+    // 传入规格：段名在多张分幅图重复出现时，只保留印有该芯数光缆材料表的页
+    hits = findSegmentDrawingHits(name, labelDocs.value, spec)
+    hitCache.set(cacheKey, hits)
   }
   return hits
 }
@@ -461,9 +467,25 @@ async function loadLabelDocs(files: FileVO[]): Promise<DrawingLabelDoc[]> {
       try {
         const data = await projectApi.parseResult(file.id)
         const labels = (data?.textLabels ?? []) as DrawingTextLabel[]
-        return { fileId: file.id, fileName: file.fileName, labels }
+        // 各图框页上的材料规格：段名命中多页时据此收敛到印有对应光缆规格的页
+        const frameSpecs = new Map<number, string[]>()
+        ;(data?.materials ?? []).forEach((table: { frame?: number | null; rows?: string[][] }) => {
+          if (table.frame == null || !table.rows) {
+            return
+          }
+          const specs = frameSpecs.get(table.frame) ?? []
+          table.rows.forEach((row) => {
+            row.forEach((cell) => {
+              if (/^[A-Z]{2,}[A-Z0-9]*-[A-Z0-9/-]+$/i.test(cell.trim()) && !specs.includes(cell.trim())) {
+                specs.push(cell.trim())
+              }
+            })
+          })
+          frameSpecs.set(table.frame, specs)
+        })
+        return { fileId: file.id, fileName: file.fileName, labels, frameSpecs }
       } catch {
-        return { fileId: file.id, fileName: file.fileName, labels: [] as DrawingTextLabel[] }
+        return { fileId: file.id, fileName: file.fileName, labels: [] as DrawingTextLabel[], frameSpecs: new Map() }
       }
     }),
   )

@@ -215,7 +215,8 @@ public class IssueService {
                     Dict.reviewStatus(issue.getReviewStatus()), issue.getReviewTime(), issue.getReviewComment(),
                     rowNo, item == null ? null : item.getItemCode(), item == null ? null : item.getItemName(),
                     item == null ? null : item.getUnit(), item == null ? null : item.getQuantity(),
-                    item == null ? null : item.getUnitPrice(), item == null ? null : item.getTotalPrice());
+                    item == null ? null : item.getUnitPrice(), item == null ? null : item.getTotalPrice(),
+                    issue.getAiReferences());
         };
     }
 }

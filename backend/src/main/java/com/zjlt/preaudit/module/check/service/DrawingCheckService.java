@@ -128,8 +128,8 @@ public class DrawingCheckService {
                 continue;
             }
             // 定额子目行（含未标类别的行）也要出「图纸无对应」：清单页的「图纸匹配」列
-            // 对这类行同样标红，两边结论必须对得上。命中材料时只判有无，不判数量偏差——
-            // 工序量和材料表的数量不是同一口径。
+            // 对这类行同样标红，两边结论必须对得上。
+            // 命中材料后照常比数量，只要单位可换算（同口径）；单位不可比的才跳过。
             boolean quotaRow = item.getItemType() == null || Dict.BOQ_QUOTA.equals(item.getItemType());
             DrawingMaterial best = null;
             double bestScore = 0d;
@@ -151,9 +151,6 @@ public class DrawingCheckService {
                                 rowRef, item.getItemName(), parsedFiles.size(), joinFiles(parsedFiles));
                 issues.add(buildIssue(projectId, item, Dict.LEVEL_MEDIUM, "C1-NO-DRAWING",
                         "图纸无对应：" + TextUtil.truncate(item.getItemName(), 60), detail, parsedFiles));
-                continue;
-            }
-            if (quotaRow) {
                 continue;
             }
             BigDecimal drawingQty = best.quantity();

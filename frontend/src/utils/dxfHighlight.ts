@@ -19,8 +19,17 @@ const ROW_TOLERANCE = 1
 let utf8Fatal: TextDecoder | null = null
 let gbk: TextDecoder | null = null
 
+/** 图纸定位到某一页时传入该图框范围，只标红这一页的文字 */
+export interface DxfBounds {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
 interface DxfText {
   text: string
+  x: number
   y: number
   /** 文字实体所在的块/模型空间：不同块里 y 相同的行不能算同一行 */
   container: number
@@ -34,6 +43,7 @@ export function highlightDxfText(
   needle: string,
   spec = '',
   fallback = '',
+  bounds?: DxfBounds | DxfBounds[] | null,
 ): ArrayBuffer {
   const target = normalize(needle)
   const specText = normalize(spec)
@@ -42,6 +52,11 @@ export function highlightDxfText(
   if (!target || bytes.length < 4) {
     return buffer
   }
+  // 传单页只标那一页；传多页则每张关联页都标。空数组表示不限制（兼容旧调用）。
+  const scope = !bounds ? [] : Array.isArray(bounds) ? bounds : [bounds]
+  const inScope = (x: number, y: number) =>
+    !scope.length ||
+    scope.some((b) => x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY)
 
   const starts: number[] = [0]
   for (let i = 0; i < bytes.length; i += 1) {
@@ -117,9 +132,18 @@ export function highlightDxfText(
         }
       }
       if (valueIndex >= 0) {
+        const y = numberAt(end, i + 2, '20')
+        const x = numberAt(end, i + 2, '10')
+        // 分幅图各页都印一份材料表，行 y 完全相同；不先按页框过滤，
+        // 归行会把不同页的「光缆」和别的页规格并到一行，越标越多。
+        if (!inScope(x, y)) {
+          i = end
+          continue
+        }
         entities.push({
           text: normalize(cleanMText(chunks + textOf(valueIndex))),
-          y: numberAt(end, i + 2, '20'),
+          x,
+          y,
           container,
           valueIndex,
           colorIndex,
@@ -146,27 +170,26 @@ export function highlightDxfText(
     row.items.push(item)
   }
 
-  // 按优先级找要标红的行，先要求"整格文字与目标相同"，再放宽到包含。
-  // 整格优先是关键：点材料「光分纤箱」时只标材料表那一格，
-  // 不会把工程量表里「安装光分纤箱、光分路箱墙壁式」这整句也标红；
-  // 反过来点安装行时也只标同名的工程量行，不会碰材料格。
-  const candidates: Array<[string, string, MatchMode]> = fallbackText
-    ? [
-        [target, '', 'exact'],
-        [target, '', 'contains'],
-        [fallbackText, specText, 'exact'],
-        [fallbackText, specText, 'contains'],
-        [fallbackText, '', 'contains'],
-        [fallbackText, '', 'partial'],
-      ]
-    : [
-        // 只有材料名称时先按规格锁定，避免 48芯 / 24芯 一起标红
-        [target, specText, 'exact'],
-        [target, '', 'exact'],
-        [target, specText, 'contains'],
-        [target, '', 'contains'],
-        [target, '', 'partial'],
-      ]
+  // 按优先级找要标红的行。整格文字优先于包含：点材料「光分纤箱」时只标材料表那一格，
+  // 不会把工程量表里「安装光分纤箱、光分路箱墙壁式」这整句也标红；反过来点安装行时
+  // 也只标同名的工程量行，不会碰材料格。
+  // 有规格时必须先用「名称 + 同一行规格」锁定：材料表里 GYTS-12B1 / GYTS-24B1 两行
+  // 都叫「光缆」，若先按不带规格的「光缆」匹配，两条会一起被标红。只有图上确实
+  // 找不到带规格的行，才退到不带规格的兜底匹配。
+  const names = fallbackText && fallbackText !== target ? [target, fallbackText] : [target]
+  const candidates: Array<[string, string, MatchMode]> = []
+  const addCandidates = (mode: MatchMode, spec: string) => {
+    for (const name of names) {
+      candidates.push([name, spec, mode])
+    }
+  }
+  if (specText) {
+    addCandidates('exact', specText)
+    addCandidates('contains', specText)
+  }
+  addCandidates('exact', '')
+  addCandidates('contains', '')
+  addCandidates('partial', '')
   let marked: DxfText[] = []
   for (const [name, rowSpec, mode] of candidates) {
     marked = collectMarked(rows, name, rowSpec, mode)

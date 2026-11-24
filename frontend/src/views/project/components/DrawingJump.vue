@@ -45,6 +45,38 @@
           <div v-if="material" class="current-material">
             材料：{{ material }}<span v-if="spec" class="material-spec"> {{ spec }}</span>
           </div>
+          <div v-if="formulaData?.parts.length" class="material-formula">
+            <template v-for="(part, index) in formulaData.parts" :key="part.label">
+              <span v-if="index" class="formula-op"> + </span>
+              <el-input
+                v-if="editing"
+                v-model="editValues[part.label]"
+                size="small"
+                class="formula-input"
+                :title="`${part.label} 数量`"
+              />
+              <el-button
+                v-else-if="part.source"
+                link
+                class="formula-part"
+                :type="isActiveSource(part.source) ? 'danger' : 'primary'"
+                :title="`${part.label} · 点击定位到该页`"
+                @click="open(part.source)"
+              >{{ part.text }}</el-button>
+              <span v-else class="formula-part-static" :title="part.label">{{ part.text }}</span>
+              <el-tag v-if="!editing && part.fixed" type="warning" size="small" effect="plain" class="formula-fixed">改</el-tag>
+            </template>
+            <span class="formula-total"> = {{ formulaData.total }}</span>
+            <template v-if="materialKey">
+              <el-button v-if="!editing" link size="small" class="formula-action" @click="startEdit">编辑</el-button>
+              <template v-else>
+                <el-button link type="success" size="small" class="formula-action" @click="saveEdit">保存</el-button>
+                <el-button link size="small" class="formula-action" @click="cancelEdit">取消</el-button>
+                <el-button link size="small" class="formula-action" @click="resetAll" title="恢复全部解析原值">恢复</el-button>
+              </template>
+            </template>
+          </div>
+          <div v-else-if="formula" class="material-formula" :title="formula">{{ formula }}</div>
         </div>
         <div class="related-line">
           <el-button size="small" :type="overview ? 'primary' : 'default'" @click="showWhole">
@@ -78,6 +110,7 @@
         :highlight="highlight || material"
         :highlight-spec="spec"
         :highlight-fallback="highlightFallback || (highlight ? material : '')"
+        :highlight-bounds="highlightBounds"
         show-pages
         :related-pages="relatedPageNos"
       />
@@ -87,8 +120,15 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { projectApi } from '@/api'
 import DrawingViewer from './DrawingViewer.vue'
-import { focusBoundsOf, type Bounds, type DrawingSource } from './drawingCompare'
+import {
+  focusBoundsOf,
+  type Bounds,
+  type DrawingSource,
+  type QuantityFormulaData,
+} from './drawingCompare'
 
 /**
  * 「在哪一页 + 点开看图」的通用入口：图纸清单、工程量清单两处共用。
@@ -113,6 +153,12 @@ const props = withDefaults(
     highlight?: string
     /** highlight 在图上找不到时的备用文字（如段落名找不到就退回材料表名称） */
     highlightFallback?: string
+    /** 关联图纸上该材料的数量计算式，如「第 2 张 100 + 第 4 张 200 = 300 米」 */
+    formula?: string
+    /** 计算式的分项与出处：数值可点击定位，当前页数值标红 */
+    formulaData?: QuantityFormulaData | null
+    /** 材料标识，传了才允许修改分项数值 */
+    materialKey?: string
   }>(),
   {
     sources: () => [],
@@ -122,8 +168,83 @@ const props = withDefaults(
     spec: '',
     highlight: '',
     highlightFallback: '',
+    formula: '',
+    formulaData: null,
+    materialKey: '',
   },
 )
+
+const emit = defineEmits<{ (event: 'fix-saved'): void }>()
+
+const editing = ref(false)
+const editValues = ref<Record<string, string>>({})
+
+function startEdit() {
+  editValues.value = Object.fromEntries(
+    (props.formulaData?.parts ?? []).map((part) => [part.label, part.text.replace(/,/g, '')]),
+  )
+  editing.value = true
+}
+
+function cancelEdit() {
+  editing.value = false
+}
+
+async function saveEdit() {
+  if (!props.materialKey) {
+    return
+  }
+  const parts = props.formulaData?.parts ?? []
+  for (const part of parts) {
+    const value = Number(editValues.value[part.label])
+    if (!Number.isFinite(value) || value < 0) {
+      ElMessage.warning(`「${part.label}」的数量无效`)
+      return
+    }
+  }
+  const changed = parts.filter(
+    (part) => part.source && Number(editValues.value[part.label]) !== Number(part.text.replace(/,/g, '')),
+  )
+  if (!changed.length) {
+    editing.value = false
+    return
+  }
+  try {
+    await Promise.all(changed.map((part) =>
+      projectApi.saveQuantityFix(
+        part.source!.fileId,
+        props.materialKey,
+        part.label,
+        Number(editValues.value[part.label]),
+      ),
+    ))
+    editing.value = false
+    ElMessage.success('数量已修正')
+    emit('fix-saved')
+  } catch {
+    ElMessage.error('数量修正保存失败')
+  }
+}
+
+async function resetAll() {
+  if (!props.materialKey) {
+    return
+  }
+  const parts = (props.formulaData?.parts ?? []).filter((part) => part.source)
+  if (!parts.length) {
+    return
+  }
+  try {
+    await Promise.all(parts.map((part) =>
+      projectApi.deleteQuantityFix(part.source!.fileId, props.materialKey, part.label),
+    ))
+    editing.value = false
+    ElMessage.success('已恢复解析原值')
+    emit('fix-saved')
+  } catch {
+    ElMessage.error('恢复失败')
+  }
+}
 
 const visible = ref(false)
 const file = ref<{ id: number; fileName: string } | null>(null)
@@ -136,6 +257,16 @@ const viewerRef = ref<InstanceType<typeof DrawingViewer>>()
 /** 预览当前显示的图页（null = 全图概览）；页码高亮统一按它判断，避免和全图状态不一致 */
 const activePage = ref<number | null>(null)
 const overview = computed(() => activePage.value === null)
+
+/**
+ * 标红范围取所有关联页，而不是只看当前放大的那一页。
+ * 工程量清单/图纸清单的一条材料常分布在多张分幅图上，只按 focus 过滤会漏标其它关联页。
+ */
+const highlightBounds = computed(() =>
+  props.sources
+    .map((src) => focusBoundsOf(src))
+    .filter((box): box is Bounds => box != null),
+)
 
 function showWhole() {
   viewerRef.value?.showWhole()
@@ -239,6 +370,44 @@ function openFile() {
 }
 .material-spec {
   font-weight: 400;
+}
+.material-formula {
+  color: #606266;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.9;
+  white-space: normal;
+  /* 优先在「 + 」处断行，避免把金额/数量数字从中间拆断 */
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+.formula-op,
+.formula-total,
+.formula-part-static {
+  white-space: pre;
+}
+/* 分项按钮按正文排版：不占额外高度，点击热区贴着数值 */
+.formula-part.el-button,
+.formula-action.el-button {
+  height: auto;
+  padding: 0 1px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  vertical-align: baseline;
+}
+.formula-action.el-button {
+  margin-left: 6px;
+}
+.formula-input {
+  width: 72px;
+}
+.formula-fixed.el-tag {
+  height: 16px;
+  padding: 0 3px;
+  margin: 0 2px;
+  font-size: 10px;
+  line-height: 14px;
+  vertical-align: middle;
 }
 .related-line {
   display: flex;

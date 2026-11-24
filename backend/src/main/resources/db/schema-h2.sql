@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS issue (
   detail CLOB,
   ai_note CLOB,
   ai_model VARCHAR(64),
+  ai_references CLOB,
   review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   reviewer_id BIGINT,
   review_time DATETIME,
@@ -239,3 +240,6 @@ ALTER TABLE boq_item ADD COLUMN IF NOT EXISTS source_sheet VARCHAR(64);
 
 -- 清单数量精度：源文件存在 0.00372 这类 5 位小数（沟千米），4 位会把数值改掉
 ALTER TABLE boq_item ALTER COLUMN quantity DECIMAL(18,6);
+
+-- 疑点归因依据：已有库补列（清单行/定额/取费规则/判定口径）
+ALTER TABLE issue ADD COLUMN IF NOT EXISTS ai_references CLOB;

@@ -40,6 +40,12 @@ public final class ProjectDtos {
                          String parseMessage, LocalDateTime createTime) {
     }
 
+    /** 人工修正某张图纸上一条材料的某个数量分项 */
+    public record QuantityFixReq(@NotBlank(message = "材料标识不能为空") String materialKey,
+                                 @NotBlank(message = "分项不能为空") String partKey,
+                                 BigDecimal value) {
+    }
+
     /** 项目详情概览：主链路指标（解析率/命中率/疑点分级/报告状态） */
     public record Overview(Long projectId, String projectName, String status, String statusName,
                            int fileCount, int boqCount, int issueTotal,

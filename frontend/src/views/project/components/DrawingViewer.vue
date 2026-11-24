@@ -77,13 +77,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { DxfViewer, type LayerInfo } from 'dxf-viewer'
 import { projectApi } from '@/api'
-import { highlightDxfText } from '@/utils/dxfHighlight'
+import { highlightDxfText, type DxfBounds } from '@/utils/dxfHighlight'
 
 const props = defineProps<{
   fileId: number
   fileName: string
   /** 只显示某一页：传该图框的坐标范围，加载完直接定位过去 */
   focus?: { minX: number; minY: number; maxX: number; maxY: number } | null
+  /** 标红限定在这些页框内：一条材料关联多页时，每张关联页都要标红 */
+  highlightBounds?: DxfBounds[] | null
   /** 要标红的文字（如材料名称）：加载前把命中的文字改成红色 */
   highlight?: string
   /** 材料规格：用来区分同名不同规格的行（如 48芯 / 24芯） */
@@ -202,6 +204,7 @@ async function init() {
               props.highlight,
               props.highlightSpec,
               props.highlightFallback,
+              props.highlightBounds?.length ? props.highlightBounds : props.focus,
             ),
           ],
           { type: blob.type },

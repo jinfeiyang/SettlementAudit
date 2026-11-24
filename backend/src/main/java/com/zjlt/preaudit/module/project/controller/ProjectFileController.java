@@ -17,9 +17,12 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.net.URLEncoder;
@@ -73,6 +76,23 @@ public class ProjectFileController {
     @GetMapping("/files/{id}/result")
     public R<java.util.Map<String, Object>> result(@PathVariable Long id) {
         return R.ok(JsonUtil.toMap(fileService.requireFile(id).getParseResult()));
+    }
+
+    @Operation(summary = "人工修正图纸上某材料的数量分项")
+    @PutMapping("/files/{id}/quantity-fix")
+    public R<Void> saveQuantityFix(@PathVariable Long id,
+                                   @Valid @RequestBody ProjectDtos.QuantityFixReq req) {
+        fileService.saveQuantityFix(id, req.materialKey(), req.partKey(), req.value());
+        return R.ok();
+    }
+
+    @Operation(summary = "删除人工数量修正（恢复解析原值）")
+    @DeleteMapping("/files/{id}/quantity-fix")
+    public R<Void> deleteQuantityFix(@PathVariable Long id,
+                                     @RequestParam String materialKey,
+                                     @RequestParam String partKey) {
+        fileService.deleteQuantityFix(id, materialKey, partKey);
+        return R.ok();
     }
 
     @Operation(summary = "图纸预览（dxf 交互数据 / svg 只读快照）")

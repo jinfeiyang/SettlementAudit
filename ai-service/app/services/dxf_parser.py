@@ -738,6 +738,31 @@ def _is_header_row(row) -> bool:
     return len(hints) >= 2
 
 
+def _split_merged_header(cluster) -> list[list[tuple[float, float, str]]]:
+    """表头里出现第二组起始列（序号/名称）时，说明两张表横向粘在同一行。
+
+    CAD 里常见的排版是左边「安装项目表」、右边「光缆材料表」并排，列距不够大时
+    _split_row 拆不开，整行会被当成一张列数翻倍的表：右边光缆的规格程式落进左边
+    材料的规格列，凭空多出「安装光分纤箱 GYTS-12B1」这类错误材料行。按重复表头
+    切开后，两张表各自按自己的列范围收数据行，互不串列。
+    """
+    texts = [_norm_header(text) for _, _, text in cluster]
+    for key in ("序号", "名称"):
+        starts = [i for i, text in enumerate(texts) if text == key]
+        if len(starts) < 2:
+            continue
+        parts: list[list[tuple[float, float, str]]] = []
+        prev = 0
+        for cut in starts[1:]:
+            if cut > prev:
+                parts.append(cluster[prev:cut])
+            prev = cut
+        if prev < len(cluster):
+            parts.append(cluster[prev:])
+        return parts
+    return [cluster]
+
+
 def _split_row(row) -> list[list[tuple[float, float, str]]]:
     """把同一行里并排的两张表拆开：列距中位数的 4 倍以上算跨表。
 
@@ -809,74 +834,76 @@ def _text_tables(entries) -> list[dict[str, Any]]:
             # 表头左右可能粘着同一高度的标注文字（尺寸、编号），按表头关键词位置裁掉
             hint_index = [i for i, (_, _, text) in enumerate(cluster) if _is_header_text(text)]
             cluster = cluster[hint_index[0]:hint_index[-1] + 1]
-            centers = [x for x, _, _ in cluster]
-            columns = [text or f"列{i + 1}" for i, (_, _, text) in enumerate(cluster)]
-            gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)
-                    if centers[i + 1] - centers[i] > 1e-6]
-            if not gaps:
-                continue
-            tol = min(gaps) * _COLUMN_TOL_RATIO
-            left, right = centers[0] - tol, centers[-1] + tol
-
-            body: list[list[str]] = []
-            # 收表区域的文字坐标：图纸没画图框时，前端只能靠它定位到这张表所在的页面
-            used: list[tuple[float, float]] = [(x, y) for x, y, _ in cluster]
-            # 单元格文字坐标：前端按「材料名称」匹配到这里，在图纸上把该名称标红
-            table_cells: list[dict[str, Any]] = [
-                _cell_meta(x, y, text, height_of, default_height) for x, y, text in cluster
-            ]
-            pitches: list[float] = []
-            prev_y = cluster[0][1]
-            for j in range(start + 1, len(rows)):
-                # 同一行里可能有别处表格的文字，只认落在本表列范围内且对得上列的
-                cells = [cell for cell in rows[j] if left <= cell[0] <= right]
-                if not cells:
+            # 横向粘在一起的两张表各收各的行，右边表的规格不会串到左边材料上
+            for sub in _split_merged_header(cluster):
+                centers = [x for x, _, _ in sub]
+                columns = [text or f"列{i + 1}" for i, (_, _, text) in enumerate(sub)]
+                gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)
+                        if centers[i + 1] - centers[i] > 1e-6]
+                if not gaps:
                     continue
-                if _is_header_row(cells):
-                    break
-                y = cells[0][1]
-                gap = prev_y - y
-                if pitches and gap > _TABLE_ROW_GAP_FACTOR * statistics.median(pitches):
-                    break
-                values = ["" for _ in centers]
-                filled = 0
-                for x, _, text in cells:
-                    # 按"离哪一列的列心最近"归列：文字插入点是左边缘，长的单元格名
-                    # （普通层绞式通信光缆）左边缘会离列心很远，卡死容差会把名称整列丢掉
-                    index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
-                    values[index] = f"{values[index]} {text}".strip() if values[index] else text
-                    filled += 1
-                if not filled:
-                    break
-                # 序号、名称都没有的"行"其实是表格下方的长度标注（管53.2、加挂25.8 之类）
-                if not values[0] and not (len(values) > 1 and values[1]):
-                    break
-                # 只填了一格的多半是「主要材料(乙供)表」这类表标题或表注，不当数据行
-                if filled == 1 and not values[0]:
-                    continue
-                body.append(values)
-                used.extend((x, y) for x, y, _ in cells)
-                table_cells.extend(
-                    _cell_meta(x, y, text, height_of, default_height) for x, y, text in cells
-                )
-                if gap > 1e-6:
-                    pitches.append(gap)
-                prev_y = y
-                if len(body) >= _TABLE_MAX_ROWS:
-                    break
+                tol = min(gaps) * _COLUMN_TOL_RATIO
+                left, right = centers[0] - tol, centers[-1] + tol
 
-            # 至少要有一行是真正填了多个单元格的，避免把零散标注当成表
-            if not any(sum(1 for cell in values if cell) >= 2 for values in body):
-                continue
-            body = _merge_split_rows(body)
-            tables.append({
-                "block": "",
-                "columns": columns,
-                "rows": body,
-                "pos": (cluster[0][0], cluster[0][1]),
-                "box": _text_box(used, heights),
-                "cells": table_cells[:_CELL_META_LIMIT],
-            })
+                body: list[list[str]] = []
+                # 收表区域的文字坐标：图纸没画图框时，前端只能靠它定位到这张表所在的页面
+                used: list[tuple[float, float]] = [(x, y) for x, y, _ in sub]
+                # 单元格文字坐标：前端按「材料名称」匹配到这里，在图纸上把该名称标红
+                table_cells: list[dict[str, Any]] = [
+                    _cell_meta(x, y, text, height_of, default_height) for x, y, text in sub
+                ]
+                pitches: list[float] = []
+                prev_y = sub[0][1]
+                for j in range(start + 1, len(rows)):
+                    # 同一行里可能有别处表格的文字，只认落在本表列范围内且对得上列的
+                    cells = [cell for cell in rows[j] if left <= cell[0] <= right]
+                    if not cells:
+                        continue
+                    if _is_header_row(cells):
+                        break
+                    y = cells[0][1]
+                    gap = prev_y - y
+                    if pitches and gap > _TABLE_ROW_GAP_FACTOR * statistics.median(pitches):
+                        break
+                    values = ["" for _ in centers]
+                    filled = 0
+                    for x, _, text in cells:
+                        # 按"离哪一列的列心最近"归列：文字插入点是左边缘，长的单元格名
+                        # （普通层绞式通信光缆）左边缘会离列心很远，卡死容差会把名称整列丢掉
+                        index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
+                        values[index] = f"{values[index]} {text}".strip() if values[index] else text
+                        filled += 1
+                    if not filled:
+                        break
+                    # 序号、名称都没有的"行"其实是表格下方的长度标注（管53.2、加挂25.8 之类）
+                    if not values[0] and not (len(values) > 1 and values[1]):
+                        break
+                    # 只填了一格的多半是「主要材料(乙供)表」这类表标题或表注，不当数据行
+                    if filled == 1 and not values[0]:
+                        continue
+                    body.append(values)
+                    used.extend((x, y) for x, y, _ in cells)
+                    table_cells.extend(
+                        _cell_meta(x, y, text, height_of, default_height) for x, y, text in cells
+                    )
+                    if gap > 1e-6:
+                        pitches.append(gap)
+                    prev_y = y
+                    if len(body) >= _TABLE_MAX_ROWS:
+                        break
+
+                # 至少要有一行是真正填了多个单元格的，避免把零散标注当成表
+                if not any(row and sum(1 for cell in row if cell) >= 2 for row in body):
+                    continue
+                body = _merge_split_rows(body)
+                tables.append({
+                    "block": "",
+                    "columns": columns,
+                    "rows": body,
+                    "pos": (sub[0][0], sub[0][1]),
+                    "box": _text_box(used, heights),
+                    "cells": table_cells[:_CELL_META_LIMIT],
+                })
     return tables
 
 
@@ -1393,10 +1420,16 @@ def summarize_materials(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
             unit = row[unit_col].strip() if unit_col is not None and unit_col < len(row) else ""
             key = (name, spec, unit)
             item = merged.setdefault(key, {"name": name, "spec": spec, "unit": unit,
-                                           "quantity": 0.0, "tables": []})
+                                           "quantity": 0.0, "tables": [],
+                                           "quantityParts": {}})
             item["quantity"] += qty
             if table["table"] not in item["tables"]:
                 item["tables"].append(table["table"])
+            # 逐表数量：图纸定位弹窗里展示「第N张 数量 + … = 合计」的计算式
+            table_no = table.get("table")
+            part_key = str(table_no) if table_no is not None else "未编号"
+            item["quantityParts"][part_key] = round(
+                item["quantityParts"].get(part_key, 0.0) + qty, 6)
 
     result = []
     for item in merged.values():

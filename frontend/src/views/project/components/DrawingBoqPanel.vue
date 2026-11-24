@@ -32,6 +32,7 @@
       ref="tableRef"
       v-loading="drawingLoading"
       :data="pagedRows"
+      row-key="key"
       :row-class-name="rowClass"
       empty-text="暂无图纸清单：请先在「资料与解析」上传并解析竣工图 DXF/DWG"
       :height="tableHeight"
@@ -40,8 +41,18 @@
       <el-table-column label="规格" width="160" align="center" class-name="wrap-cell">
         <template #default="{ row }">{{ row.spec || '-' }}</template>
       </el-table-column>
-      <el-table-column label="图纸数量" width="140" align="center" class-name="num-cell">
-        <template #default="{ row }">{{ qty(row.quantity) }}</template>
+      <el-table-column label="图纸数量" width="180" align="center" class-name="num-cell">
+        <template #default="{ row }">
+          {{ qty(row.quantity) }}
+          <el-tag
+            v-if="hasFix(row.key)"
+            type="warning"
+            size="small"
+            effect="plain"
+            class="qty-fixed-tag"
+            :title="fixedTip(row.key)"
+          >已改</el-tag>
+        </template>
       </el-table-column>
       <el-table-column prop="unit" label="单位" width="90" align="center" />
       <el-table-column label="所在图页" width="180" align="center" class-name="wrap-cell">
@@ -51,6 +62,10 @@
             :fallback="fallbackOf(row)"
             :material="row.name"
             :spec="row.spec"
+            :formula="quantityFormula(row)"
+            :formula-data="quantityFormulaData(row, quantityFixes[row.key])"
+            :material-key="row.key"
+            @fix-saved="reloadAfterFix"
           />
         </template>
       </el-table-column>
@@ -134,6 +149,10 @@
               :fallback="fallbackOf(detailRow)"
               :material="detailRow.name"
               :spec="detailRow.spec"
+              :formula="quantityFormula(detailRow)"
+              :formula-data="quantityFormulaData(detailRow, quantityFixes[detailRow.key])"
+              :material-key="detailRow.key"
+              @fix-saved="reloadAfterFix"
               show-title
             />
           </el-descriptions-item>
@@ -185,10 +204,15 @@ import { useTableHeight } from '@/utils/useTableHeight'
 import DrawingJump from './DrawingJump.vue'
 import {
   applyMatchOverrides,
+  applyQuantityFixes,
   compareDrawingWithBoq,
   diffState,
   matchScore,
   mergeDrawingMaterials,
+  mergeQuantityFixes,
+  quantityFormula,
+  quantityFormulaData,
+  type QuantityFixes,
   type DrawingFrameItem,
   type DrawingMaterial,
   type DrawingMaterialItem,
@@ -222,6 +246,8 @@ const emit = defineEmits<{
 
 const all = ref<BoqItemVO[]>([])
 const drawingMaterials = ref<DrawingMaterial[]>([])
+/** 人工修正的数量分项：材料 key → 分项键 → 数值 */
+const quantityFixes = ref<QuantityFixes>({})
 const drawingLoading = ref(false)
 const unmatchedOnly = ref(false)
 /** 匹配结果筛选：名称一致 / 相似关联 / 清单无此项 */
@@ -261,6 +287,33 @@ const detailRow = ref<DrawingRow | null>(null)
 function openDetail(row: DrawingRow) {
   detailRow.value = row
   detailVisible.value = true
+}
+
+/** 该材料是否有人工修正过的数量分项，供列表直接提示 */
+function hasFix(key?: string): boolean {
+  return !!key && Object.keys(quantityFixes.value[key] ?? {}).length > 0
+}
+
+/** 列表修正标记的提示文案：列出被改的分项及其数值 */
+function fixedTip(key?: string): string {
+  if (!key) {
+    return ''
+  }
+  const parts = quantityFixes.value[key] ?? {}
+  const items = Object.entries(parts).map(([label, value]) => `${label}：${qty(value)}`)
+  return items.length ? `数量已人工修正\n${items.join('\n')}` : ''
+}
+
+/** 修正数量后行对象会重建，详情弹窗按 key 换到新对象，避免顶部材料显示旧数据/串位 */
+async function reloadAfterFix() {
+  const key = detailRow.value?.key
+  await loadDrawings()
+  // 通知父组件自增版本号，让工程量清单面板同步刷新数量修正
+  emit('changed')
+  if (!detailVisible.value || !key) {
+    return
+  }
+  detailRow.value = comparisons.value.rows.find((row) => row.key === key) ?? detailRow.value
 }
 const matchOptions = computed<MatchOption[]>(() => {
   const material = matchRow.value
@@ -436,10 +489,12 @@ async function loadDrawings() {
       (file) => (file.fileType === 'DXF' || file.fileType === 'DWG') && file.parseStatus === 'SUCCESS',
     )
     fileIdsByName.value = Object.fromEntries(drawings.map((file) => [file.fileName, file.id]))
+    const fixes: QuantityFixes = {}
     const results = await Promise.all(
       drawings.map(async (file) => {
         try {
           const data = await projectApi.parseResult(file.id)
+          mergeQuantityFixes(fixes, data?.manualQuantityFixes as QuantityFixes | undefined)
           return {
             fileId: file.id,
             fileName: file.fileName,
@@ -453,7 +508,9 @@ async function loadDrawings() {
         }
       }),
     )
+    quantityFixes.value = fixes
     drawingMaterials.value = mergeDrawingMaterials(results)
+    applyQuantityFixes(drawingMaterials.value, fixes)
     locateFocus()
   } finally {
     drawingLoading.value = false
@@ -556,6 +613,11 @@ onMounted(refreshAll)
 }
 :deep(.num-cell .cell) {
   font-variant-numeric: tabular-nums;
+}
+.qty-fixed-tag {
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: pre-line;
 }
 /* 与工程量清单一致：单元格统一换行，名称列留出内边距 */
 :deep(.el-table .cell) {

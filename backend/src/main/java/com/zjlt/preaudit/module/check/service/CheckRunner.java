@@ -145,9 +145,10 @@ public class CheckRunner {
         taskMapper.updateById(task);
         issues.addAll(drawingCheckService.check(project, items));
 
-        if (aiSettingsService.isLlmAttributionEnabled()) {
-            enrichWithAi(issues);
-        }
+        Map<Long, BoqItem> itemById = allItems.stream()
+                .filter(x -> x.getId() != null)
+                .collect(java.util.stream.Collectors.toMap(BoqItem::getId, x -> x, (a, b) -> a));
+        enrichWithAi(issues, itemById, quotas, fees);
         issues.forEach(issueMapper::insert);
 
         int high = (int) issues.stream().filter(x -> x.getLevel() == Dict.LEVEL_HIGH).count();
@@ -354,36 +355,236 @@ public class CheckRunner {
         issues.add(issue);
     }
 
-    /** LLM 归因：开关开启后对所有疑点并发生成解释，仅生成文字、不影响金额与结论 */
-    private void enrichWithAi(List<Issue> issues) {
-        int budget = 50;
-        List<Issue> targets = issues.stream().limit(budget).toList();
-        if (targets.isEmpty()) {
+    /**
+     * 疑点依据：由确定性内核直接给出出处（清单行/定额子目/取费规则/判定口径）。
+     * aiCited 表示模型在建议里引用了该条，仅作展示标记，不影响判定。
+     */
+    public record IssueEvidence(String type, String code, String name, String note, String source, boolean aiCited) {
+    }
+
+    /** 模型归因结果：建议文字 + 引用的依据编号（E1/E2…） */
+    private record Attribution(String advice, String model, List<String> refs) {
+    }
+
+    /** 判定口径：说明这条疑点按什么标准判出来，供复核人员核对 */
+    private static final Map<String, String> RULE_CALIBERS = Map.ofEntries(
+            Map.entry("B0-QTY", "工程量必须大于 0，否则无法核算"),
+            Map.entry("B0-PRICE", "综合单价应大于 0；有合价时必须能取到单价"),
+            Map.entry("B0-AMOUNT", "合价应等于数量×综合单价，允许 ±1 元舍入差"),
+            Map.entry("B1-MISS", "清单行应套用定额子目，未匹配或相似度过低按错套/缺套处理"),
+            Map.entry("B1-SEMANTIC", "语义召回命中但非精确匹配，需人工确认定额选择"),
+            Map.entry("B1-CONVERT", "图纸与清单单位口径不同时按换算系数折算后比较"),
+            Map.entry("B2-FEE-DEVIATION", "取费按规则库基数公式与费率核算，偏差超 5% 报中风险、超 15% 报高风险"),
+            Map.entry("B2-NO-RULE", "规则库缺少本工程类型的取费规则，取费核查无法执行"),
+            Map.entry("B2-NO-SETTLE", "结算送审金额为空时无法比较取费偏差"),
+            Map.entry("B2-NO-PRICE", "可核算行占比低于 50% 时取费基数不可信，不判定偏差"),
+            Map.entry("B2-MIXED-PRICING", "混合计价项目取费只核定额法部分，不与全口径送审金额比较"),
+            Map.entry("C1-NO-DRAWING", "清单材料在图纸材料表中没有对应项，需确认是否为漏画或名称口径不一致"),
+            Map.entry("C1-QTY-LESS", "图纸材料表数量小于清单数量，需核对是否漏计、多计或换算口径不同"),
+            Map.entry("C1-QTY-MORE", "图纸材料表数量大于清单数量，需核对是否重复计取或换算口径不同"));
+
+    /**
+     * 归因与依据：依据始终由确定性内核构造，AI 开关只决定是否追加模型建议。
+     * 模型输出遵循 {"advice":"...","refs":["E1"]} 时记录引用标记；输出不合规则整段当建议，不臆造引用。
+     */
+    private void enrichWithAi(List<Issue> issues, Map<Long, BoqItem> itemById,
+                              List<RuleQuota> quotas, List<RuleFee> fees) {
+        if (issues.isEmpty()) {
             return;
         }
-        // 专用小线程池并发调用 AI，避免串行累加延迟；用完即关，不占用核查线程池
-        java.util.concurrent.ExecutorService pool =
-                java.util.concurrent.Executors.newFixedThreadPool(Math.min(targets.size(), 6));
-        try {
-            List<java.util.concurrent.CompletableFuture<Void>> futures = new ArrayList<>();
-            for (Issue issue : targets) {
-                futures.add(java.util.concurrent.CompletableFuture.runAsync(() -> {
-                    String prompt = "请针对该造价预审疑点给出不超过 80 字的核查建议，说明应核对哪些资料与口径，不做金额判定。直接输出纯文本，不要输出 JSON 或代码围栏。";
-                    Optional<AiServiceClient.ChatResp> resp = aiClient.chat("ATTRIBUTION", prompt, Map.of(
-                            "title", issue.getTitle(),
-                            "detail", issue.getDetail() == null ? "" : issue.getDetail(),
-                            "refValue", issue.getRefValue() == null ? "" : issue.getRefValue()));
-                    resp.ifPresent(r -> {
-                        issue.setAiNote(TextUtil.truncate(r.content(), 900));
-                        issue.setAiModel(r.model());
-                    });
-                }, pool));
+        Map<Issue, List<IssueEvidence>> evidenceMap = new java.util.IdentityHashMap<>();
+        issues.forEach(issue -> evidenceMap.put(issue,
+                buildEvidence(issue, itemById.get(issue.getBoqItemId()), quotas, fees)));
+
+        // AI 关闭时只落依据，不调用模型：疑点依然带出处，可审计
+        int budget = 50;
+        List<Issue> targets = aiSettingsService.isLlmAttributionEnabled()
+                ? issues.stream().limit(budget).toList() : List.of();
+        Map<Issue, Attribution> attributionMap = new java.util.IdentityHashMap<>();
+        if (!targets.isEmpty()) {
+            // 专用小线程池并发调用 AI，避免串行累加延迟；用完即关，不占用核查线程池
+            java.util.concurrent.ExecutorService pool =
+                    java.util.concurrent.Executors.newFixedThreadPool(Math.min(targets.size(), 6));
+            try {
+                List<java.util.concurrent.CompletableFuture<Void>> futures = new ArrayList<>();
+                for (Issue issue : targets) {
+                    String evidenceBlock = evidenceBlock(evidenceMap.get(issue));
+                    futures.add(java.util.concurrent.CompletableFuture.runAsync(() -> {
+                        String prompt = "请针对该造价预审疑点给出不超过 80 字的核查建议，说明应核对哪些资料与口径，不做金额判定。"
+                                + "【上下文】中已给出编号依据，请只引用真正相关的编号。"
+                                + "直接输出 JSON：{\"advice\":\"建议文字\",\"refs\":[\"E1\"]}，不要输出代码围栏。";
+                        Optional<AiServiceClient.ChatResp> resp = aiClient.chat("ATTRIBUTION", prompt, Map.of(
+                                "title", issue.getTitle(),
+                                "detail", issue.getDetail() == null ? "" : issue.getDetail(),
+                                "refValue", issue.getRefValue() == null ? "" : issue.getRefValue(),
+                                "evidence", evidenceBlock));
+                        resp.ifPresent(r -> attributionMap.put(issue, parseAttribution(r.content(), r.model())));
+                    }, pool));
+                }
+                java.util.concurrent.CompletableFuture.allOf(
+                        futures.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
+            } finally {
+                pool.shutdown();
             }
-            java.util.concurrent.CompletableFuture.allOf(
-                    futures.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
-        } finally {
-            pool.shutdown();
         }
+
+        for (Issue issue : issues) {
+            List<IssueEvidence> evidences = evidenceMap.get(issue);
+            Attribution attribution = attributionMap.get(issue);
+            if (attribution != null) {
+                if (attribution.advice() != null && !attribution.advice().isBlank()) {
+                    issue.setAiNote(TextUtil.truncate(attribution.advice(), 900));
+                }
+                issue.setAiModel(attribution.model());
+                evidences = markCited(evidences, attribution.refs());
+            }
+            issue.setAiReferences(JsonUtil.toJson(evidences));
+        }
+    }
+
+    /** 依据列表：清单行 + 命中定额 + 适用取费规则 + 判定口径，全部来自确定性数据 */
+    private List<IssueEvidence> buildEvidence(Issue issue, BoqItem item, List<RuleQuota> quotas,
+                                              List<RuleFee> fees) {
+        List<IssueEvidence> list = new ArrayList<>();
+        if (item != null) {
+            StringBuilder note = new StringBuilder();
+            if (item.getFeatureDesc() != null && !item.getFeatureDesc().isBlank()) {
+                note.append(item.getFeatureDesc()).append("；");
+            }
+            note.append("单位 ").append(TextUtil.nullToEmpty(item.getUnit()))
+                    .append("，数量 ").append(item.getQuantity() == null ? "-" : plain(item.getQuantity()));
+            if (item.getUnitPrice() != null) {
+                note.append("，综合单价 ").append(plain(item.getUnitPrice())).append(" 元");
+            }
+            list.add(new IssueEvidence("BOQ_ROW",
+                    "第 " + (item.getRowNo() == null ? "-" : item.getRowNo()) + " 行",
+                    TextUtil.nullToEmpty(item.getItemName()), note.toString(), "工程量清单", false));
+        }
+        if (item != null && item.getMatchQuotaCode() != null) {
+            RuleQuota quota = quotas.stream()
+                    .filter(q -> item.getMatchQuotaCode().equals(q.getQuotaCode()))
+                    .findFirst().orElse(null);
+            String note = quota == null ? "" : "基价 " + plain(quota.getBasePrice()) + " 元/"
+                    + TextUtil.nullToEmpty(quota.getUnit()) + "；版本 " + TextUtil.nullToEmpty(quota.getVersion());
+            list.add(new IssueEvidence("QUOTA", item.getMatchQuotaCode(),
+                    TextUtil.nullToEmpty(item.getMatchQuotaName()), note, "规则库-定额子目", false));
+        }
+        if (issue.getRuleCode() != null && issue.getRuleCode().startsWith("B2")) {
+            fees.stream().limit(8).forEach(fee -> list.add(new IssueEvidence("FEE", fee.getFeeCode(),
+                    fee.getFeeName(),
+                    "基数 " + TextUtil.nullToEmpty(fee.getBaseFormula()) + "；费率 "
+                            + (fee.getRate() == null ? "-"
+                            : plain(fee.getRate().multiply(BigDecimal.valueOf(100))) + "%"),
+                    "规则库-取费规则", false)));
+        }
+        String caliber = issue.getRuleCode() == null ? null : RULE_CALIBERS.get(issue.getRuleCode());
+        if (caliber != null) {
+            list.add(new IssueEvidence("RULE", issue.getRuleCode(), "判定口径", caliber, "预审规则", false));
+        }
+        return list;
+    }
+
+    /** 供模型阅读的依据编号清单：模型按 E1/E2… 回引 */
+    private String evidenceBlock(List<IssueEvidence> evidences) {
+        if (evidences == null || evidences.isEmpty()) {
+            return "（无）";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < evidences.size(); i++) {
+            IssueEvidence e = evidences.get(i);
+            sb.append("[E").append(i + 1).append("] ").append(evidenceTypeName(e.type()))
+                    .append("｜").append(e.code());
+            if (!e.name().isBlank()) {
+                sb.append(" ").append(e.name());
+            }
+            if (!e.note().isBlank()) {
+                sb.append("｜").append(e.note());
+            }
+            sb.append('\n');
+        }
+        return sb.toString();
+    }
+
+    private String evidenceTypeName(String type) {
+        return switch (type) {
+            case "BOQ_ROW" -> "清单行";
+            case "QUOTA" -> "定额子目";
+            case "FEE" -> "取费规则";
+            case "RULE" -> "判定口径";
+            default -> type;
+        };
+    }
+
+    /** 按模型回引的编号打标；编号越界直接忽略，不猜 */
+    private List<IssueEvidence> markCited(List<IssueEvidence> evidences, List<String> refs) {
+        if (evidences == null || evidences.isEmpty() || refs == null || refs.isEmpty()) {
+            return evidences;
+        }
+        java.util.Set<Integer> cited = new java.util.HashSet<>();
+        for (String ref : refs) {
+            Integer idx = refIndex(ref);
+            if (idx != null && idx >= 1 && idx <= evidences.size()) {
+                cited.add(idx);
+            }
+        }
+        if (cited.isEmpty()) {
+            return evidences;
+        }
+        List<IssueEvidence> marked = new ArrayList<>(evidences.size());
+        for (int i = 0; i < evidences.size(); i++) {
+            IssueEvidence e = evidences.get(i);
+            marked.add(cited.contains(i + 1)
+                    ? new IssueEvidence(e.type(), e.code(), e.name(), e.note(), e.source(), true) : e);
+        }
+        return marked;
+    }
+
+    private Attribution parseAttribution(String content, String model) {
+        String text = stripFence(content);
+        try {
+            Map<String, Object> map = JsonUtil.toMap(text);
+            Object advice = map.get("advice");
+            List<String> refs = new ArrayList<>();
+            if (map.get("refs") instanceof List<?> raw) {
+                raw.forEach(item -> refs.add(String.valueOf(item)));
+            }
+            return new Attribution(advice == null ? text : String.valueOf(advice), model, refs);
+        } catch (Exception e) {
+            // 模型没按 JSON 输出：整段当建议，不臆造引用
+            return new Attribution(text, model, List.of());
+        }
+    }
+
+    /** 去掉模型常带的 ```json 围栏 */
+    private String stripFence(String content) {
+        String text = content == null ? "" : content.trim();
+        if (text.startsWith("```")) {
+            int firstLine = text.indexOf('\n');
+            text = firstLine < 0 ? "" : text.substring(firstLine + 1);
+            if (text.endsWith("```")) {
+                text = text.substring(0, text.length() - 3);
+            }
+        }
+        return text.trim();
+    }
+
+    private Integer refIndex(String ref) {
+        if (ref == null) {
+            return null;
+        }
+        String digits = ref.replaceAll("[^0-9]", "");
+        if (digits.isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(digits);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String plain(BigDecimal value) {
+        return value == null ? "-" : value.stripTrailingZeros().toPlainString();
     }
 
     private Issue issue(Long projectId, BoqItem item, String rowRef, String type, int level,

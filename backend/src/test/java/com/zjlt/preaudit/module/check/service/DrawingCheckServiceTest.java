@@ -79,13 +79,26 @@ class DrawingCheckServiceTest {
     }
 
     @Test
-    void 定额子目行命中材料时不比数量() {
+    void 定额子目行命中材料且单位可换算时也比数量() {
         BoqItem quota = materialItem(9, "光缆接头盒", "48芯", "个", "10");
         quota.setItemType(Dict.BOQ_QUOTA);
         List<Issue> issues = service.evaluate(1L, List.of(quota), Map.of("k",
                 material("光缆接头盒", "48芯", "个", "5")), List.of("A.dwg"));
 
-        assertTrue(issues.isEmpty(), "工序量与材料表数量不是同一口径，定额行只判有没有，不比数量");
+        assertEquals(1, issues.size(), "定额行同单位同口径时应与清单页一致报数量偏小");
+        assertEquals("C1-QTY-LESS", issues.get(0).getRuleCode());
+    }
+
+    @Test
+    void 定额子目行命中材料但单位不可比时不出数量疑点() {
+        BoqItem quota = materialItem(9, "光缆接头盒", "48芯", "米", "10");
+        quota.setItemType(Dict.BOQ_QUOTA);
+        List<Issue> issues = service.evaluate(1L, List.of(quota), Map.of("k",
+                material("光缆接头盒", "48芯", "个", "5")), List.of("A.dwg"));
+
+        // 单位冲突时 score=0，按既有规则归到「图纸无对应」，但绝不能出数量偏差疑点
+        assertEquals(1, issues.size());
+        assertEquals("C1-NO-DRAWING", issues.get(0).getRuleCode());
     }
 
     @Test

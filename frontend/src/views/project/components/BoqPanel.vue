@@ -49,6 +49,7 @@
         ref="tableRef"
         v-loading="loading"
         :data="pageRows"
+        :row-key="(row: BoqItemVO) => String(row.rowNo)"
         :row-class-name="rowClass"
         empty-text="暂无清单数据，请先在「资料与解析」上传清单 Excel"
         :height="tableHeight"
@@ -93,6 +94,14 @@
               </div>
               <div class="cmp-line">
                 图纸 {{ qty(row.drawing.quantity) }}{{ row.drawing.unit }}
+                <el-tag
+                  v-if="hasFix(row.drawing.key)"
+                  type="warning"
+                  size="small"
+                  effect="plain"
+                  class="qty-fixed-tag"
+                  :title="fixedTip(row.drawing.key)"
+                >已改</el-tag>
                 <span
                   v-if="row.drawing.diffRate !== null && row.drawing.diffRate !== undefined"
                   :class="['diff', 'diff-clickable', row.drawing.diffRate > 0 ? 'diff-more' : 'diff-less']"
@@ -108,6 +117,10 @@
                 :material="row.drawing.name"
                 :spec="row.drawing.spec"
                 :highlight="row.itemType === 'QUOTA' ? row.itemName : ''"
+                :formula="quantityFormula(row.drawing)"
+                :formula-data="quantityFormulaData(row.drawing, quantityFixes[row.drawing.key])"
+                :material-key="row.drawing.key"
+                @fix-saved="reloadAfterFix"
               />
             </template>
             <span v-else-if="!drawingMaterials.length" class="muted">图纸清单为空</span>
@@ -204,6 +217,10 @@
               :material="detailRow.drawing.name"
               :spec="detailRow.drawing.spec"
               :highlight="detailRow.itemType === 'QUOTA' ? detailRow.itemName : ''"
+              :formula="quantityFormula(detailRow.drawing)"
+              :formula-data="quantityFormulaData(detailRow.drawing, quantityFixes[detailRow.drawing.key])"
+              :material-key="detailRow.drawing.key"
+              @fix-saved="reloadAfterFix"
               show-title
             />
           </el-descriptions-item>
@@ -295,10 +312,15 @@ import {
 } from '@/utils/cableCheck'
 import {
   applyMatchOverrides,
+  applyQuantityFixes,
   compareDrawingWithBoq,
   diffState,
   matchScore,
   mergeDrawingMaterials,
+  mergeQuantityFixes,
+  quantityFormula,
+  quantityFormulaData,
+  type QuantityFixes,
   type DrawingFrameItem,
   type DrawingMaterial,
   type DrawingMaterialItem,
@@ -366,6 +388,8 @@ const detailRow = ref<BoqRow | null>(null)
 
 /** 清单行的人工匹配结论（手工指定 / 手工取消），覆盖自动匹配 */
 const drawingOverrides = ref<MatchOverride[]>([])
+/** 人工修正的数量分项：材料 key → 分项键 → 数值 */
+const quantityFixes = ref<QuantityFixes>({})
 
 const comparisons = computed(() =>
   applyMatchOverrides(
@@ -553,6 +577,40 @@ function openDetail(row: BoqRow) {
   detailVisible.value = true
 }
 
+/** 该图纸材料是否有人工修正过的数量分项，供列表直接提示 */
+function hasFix(key?: string): boolean {
+  return !!key && Object.keys(quantityFixes.value[key] ?? {}).length > 0
+}
+
+/** 列表修正标记的提示文案：列出被改的分项及其数值 */
+function fixedTip(key?: string): string {
+  if (!key) {
+    return ''
+  }
+  const parts = quantityFixes.value[key] ?? {}
+  const items = Object.entries(parts).map(([label, value]) => `${label}：${qty(value)}`)
+  return items.length ? `数量已人工修正\n${items.join('\n')}` : ''
+}
+
+/**
+ * 修正数量后重新加载，行对象会整体重建。详情弹窗持有的是旧快照，
+ * 若不同步替换，弹窗顶部的材料名/规格会停留在旧数据，甚至和表格串行。
+ */
+async function reloadAfterFix() {
+  const id = detailRow.value?.id
+  await loadDrawings()
+  // 通知父组件自增版本号，让图纸清单面板同步刷新数量修正
+  emit('changed')
+  if (!detailVisible.value || id == null) {
+    return
+  }
+  // 清单行本身不变，但关联的图纸材料会重建；把新的图纸行换进详情快照
+  const fresh = comparisons.value.byBoqId.get(id)
+  if (fresh) {
+    detailRow.value = { ...detailRow.value!, drawing: fresh }
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -572,10 +630,12 @@ async function loadDrawings() {
       (file) => (file.fileType === 'DXF' || file.fileType === 'DWG') && file.parseStatus === 'SUCCESS',
     )
     drawingFileIds.value = Object.fromEntries(drawings.map((file) => [file.fileName, file.id]))
+    const fixes: QuantityFixes = {}
     const results = await Promise.all(
       drawings.map(async (file) => {
         try {
           const data = await projectApi.parseResult(file.id)
+          mergeQuantityFixes(fixes, data?.manualQuantityFixes as QuantityFixes | undefined)
           return {
             fileId: file.id,
             fileName: file.fileName,
@@ -589,7 +649,9 @@ async function loadDrawings() {
         }
       }),
     )
+    quantityFixes.value = fixes
     drawingMaterials.value = mergeDrawingMaterials(results)
+    applyQuantityFixes(drawingMaterials.value, fixes)
     // 逐张图保留各自的长度，核查时一张图对一次清单，不做跨图合计
     drawingCableFiles.value = results.map((item) => ({
       fileName: item.fileName,
@@ -768,6 +830,11 @@ onMounted(() => {
   color: #a8abb2;
   font-size: 12px;
   line-height: 1.4;
+}
+.qty-fixed-tag {
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: pre-line;
 }
 .cmp-line {
   color: #606266;

@@ -19,7 +19,8 @@ public final class IssueDtos {
                           String aiNote, String aiModel, String reviewStatus, String reviewStatusName,
                           LocalDateTime reviewTime, String reviewComment,
                           Integer rowNo, String itemCode, String itemName, String unit,
-                          BigDecimal quantity, BigDecimal unitPrice, BigDecimal totalPrice) {
+                          BigDecimal quantity, BigDecimal unitPrice, BigDecimal totalPrice,
+                          String aiReferences) {
     }
 
     public record ReviewReq(@NotBlank(message = "复核动作不能为空") String action, String comment) {

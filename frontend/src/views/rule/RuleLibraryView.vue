@@ -228,11 +228,13 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox, type TableInstance, type UploadRequestOptions } from 'element-plus'
 import { ruleApi } from '@/api'
 import { decimalPercent, money } from '@/utils/format'
 import { useTableHeight } from '@/utils/useTableHeight'
 
+const route = useRoute()
 const tab = ref('quota')
 
 /** 表格高度跟随窗口，50 条/页时也不会撑出可视区域 */
@@ -424,6 +426,19 @@ async function importFee(options: UploadRequestOptions) {
 }
 
 onMounted(() => {
+  // 疑点依据可带 tab + keyword 进来，直接落到对应规则并回填关键字
+  const qTab = route.query.tab as string | undefined
+  const keyword = (route.query.keyword as string | undefined) || ''
+  if (qTab === 'fee' || qTab === 'quota') {
+    tab.value = qTab
+  }
+  if (keyword) {
+    if (tab.value === 'fee') {
+      feeQuery.keyword = keyword
+    } else {
+      quotaQuery.keyword = keyword
+    }
+  }
   loadQuota()
   loadFee()
 })

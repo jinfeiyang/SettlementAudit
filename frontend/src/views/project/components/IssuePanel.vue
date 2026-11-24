@@ -111,7 +111,30 @@
           :title="`模型：${current.aiModel || '未知'}`"
           :description="current.aiNote"
         />
-        <el-empty v-else description="未启用 AI 归因（可在后端配置 LLM 后开启）" :image-size="60" />
+        <el-empty v-else description="暂无 AI 归因建议（AI 服务未配置或调用失败），下方确定性依据仍可核对" :image-size="60" />
+
+        <h4>参考依据（确定性核算出处）</h4>
+        <div v-if="evidences.length" class="evidences">
+          <div v-for="ev in evidences" :key="`${ev.type}-${ev.code}`" class="evidence">
+            <el-tag size="small" effect="plain" :type="evidenceTag(ev.type)">
+              {{ evidenceTypeName(ev.type) }}
+            </el-tag>
+            <span class="ev-code">{{ ev.code }}</span>
+            <span class="ev-name">{{ ev.name }}</span>
+            <span v-if="ev.note" class="ev-note">{{ ev.note }}</span>
+            <el-tag v-if="ev.aiCited" size="small" type="primary">AI 引用</el-tag>
+            <el-button
+              v-if="ev.type === 'QUOTA' || ev.type === 'FEE'"
+              link
+              type="primary"
+              size="small"
+              @click="gotoRule(ev)"
+            >
+              查看规则
+            </el-button>
+          </div>
+        </div>
+        <el-empty v-else description="该疑点为历史数据，重新核查后会带出依据" :image-size="60" />
 
         <h4>复核意见</h4>
         <el-input v-model="comment" type="textarea" :rows="3" placeholder="填写复核意见（选填）" />
@@ -126,7 +149,8 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, type TableInstance } from 'element-plus'
 import { issueApi, type IssueVO } from '@/api'
 import { levelTag, money } from '@/utils/format'
@@ -156,6 +180,57 @@ const detailVisible = ref(false)
 const current = ref<IssueVO>()
 const comment = ref('')
 const query = reactive<any>({ level: undefined, issueType: '', reviewStatus: '', keyword: '', page: 1, size: 20 })
+const router = useRouter()
+
+/** 归因依据（后端确定性构造）：清单行/定额子目/取费规则/判定口径 */
+interface IssueEvidence {
+  type: string
+  code: string
+  name: string
+  note?: string
+  source?: string
+  aiCited?: boolean
+}
+
+const evidences = computed<IssueEvidence[]>(() => {
+  if (!current.value?.aiReferences) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(current.value.aiReferences)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+})
+
+function evidenceTypeName(type: string): string {
+  const names: Record<string, string> = {
+    BOQ_ROW: '清单行',
+    QUOTA: '定额子目',
+    FEE: '取费规则',
+    RULE: '判定口径',
+  }
+  return names[type] || type
+}
+
+function evidenceTag(type: string): 'primary' | 'success' | 'info' | 'warning' | 'danger' {
+  const tags: Record<string, 'primary' | 'success' | 'info' | 'warning' | 'danger'> = {
+    BOQ_ROW: 'info',
+    QUOTA: 'success',
+    FEE: 'warning',
+    RULE: 'primary',
+  }
+  return tags[type] || 'info'
+}
+
+/** 定额/取费依据直接带到规则库并回填关键字，方便核对口径 */
+function gotoRule(ev: IssueEvidence) {
+  router.push({
+    path: '/rules',
+    query: { tab: ev.type === 'FEE' ? 'fee' : 'quota', keyword: ev.code },
+  })
+}
 
 function reviewTag(status: string): 'success' | 'danger' | 'warning' {
   if (status === 'CONFIRMED') {
@@ -252,6 +327,31 @@ watch(() => props.refreshKey, () => {
   margin-top: 16px;
   display: flex;
   gap: 8px;
+}
+.evidences {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.evidence {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.ev-code {
+  color: #303133;
+  font-weight: 600;
+}
+.ev-name {
+  color: #303133;
+}
+.ev-note {
+  color: #909399;
 }
 h4 {
   margin: 18px 0 8px;

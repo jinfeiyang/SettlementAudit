@@ -32,6 +32,8 @@ public class Issue extends BaseEntity {
     /** LLM 归因解释（仅建议，不写金额、不下结论） */
     private String aiNote;
     private String aiModel;
+    /** 归因依据（JSON 数组）：清单行/定额子目/取费规则/判定口径，确定性内核给出，不依赖模型 */
+    private String aiReferences;
     /** PENDING/CONFIRMED/REJECTED */
     private String reviewStatus;
     private Long reviewerId;

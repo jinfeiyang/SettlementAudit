@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS issue (
   detail TEXT COMMENT '确定性内核判定明细',
   ai_note TEXT COMMENT 'LLM 归因解释（仅建议，不写入金额/结论）',
   ai_model VARCHAR(64) COMMENT '生成 ai_note 的模型标识',
+  ai_references TEXT COMMENT '归因依据 JSON（清单行/定额/取费规则/判定口径）',
   review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/CONFIRMED/REJECTED',
   reviewer_id BIGINT,
   review_time DATETIME,

@@ -21,7 +21,7 @@
     <el-row :gutter="16" class="charts">
       <el-col :span="12">
         <el-card shadow="never">
-          <template #header>疑点分级分布（一期指标：三级分级）</template>
+          <template #header>疑点分级分布</template>
           <div ref="barRef" class="chart" />
         </el-card>
       </el-col>
@@ -98,13 +98,11 @@ const cards = computed(() => [
   {
     label: '平均清单可解析率',
     value: percent(data.value.avgParseRate),
-    sub: '目标 ≥ 95%',
     color: '#67c23a',
   },
   {
     label: '平均定额前三命中率',
     value: percent(data.value.avgHitRate),
-    sub: '目标 ≥ 85%',
     color: '#e6a23c',
   },
 ])

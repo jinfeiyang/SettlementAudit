@@ -150,6 +150,8 @@ export interface IssueVO {
   detail?: string
   aiNote?: string
   aiModel?: string
+  /** 归因依据 JSON：清单行/定额子目/取费规则/判定口径 */
+  aiReferences?: string
   reviewStatus: string
   reviewStatusName: string
   reviewTime?: string
@@ -247,6 +249,11 @@ export const projectApi = {
   deleteFile: (fileId: number) => request.delete<void>(`/files/${fileId}`),
   downloadFile: (fileId: number, name: string) => download(`/files/${fileId}/download`, name),
   parseResult: (fileId: number) => request.get<Record<string, any>>(`/files/${fileId}/result`),
+  /** 人工修正图纸上某材料某分项的数量，保存后随解析结果一起返回 */
+  saveQuantityFix: (fileId: number, materialKey: string, partKey: string, value: number) =>
+    request.put<void>(`/files/${fileId}/quantity-fix`, { materialKey, partKey, value }),
+  deleteQuantityFix: (fileId: number, materialKey: string, partKey: string) =>
+    request.delete<void>(`/files/${fileId}/quantity-fix`, { params: { materialKey, partKey } }),
   /**
    * 图纸预览：dxf 为交互渲染数据（前端解析），svg 为服务端渲染快照（大图降级）。
    * 带时间戳是为了绕开浏览器对 GET 的强缓存：出图结果会随后处理逻辑变化，

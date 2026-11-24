@@ -19,6 +19,8 @@ export interface DrawingMaterialItem {
   tableCount?: number
   /** 这条材料出自哪几张材料表（AI 服务 materials[].table 的编号） */
   tables?: number[]
+  /** 逐表数量：表号 → 该表中的数量，用于展示数量计算式 */
+  quantityParts?: Record<string, number>
 }
 
 export interface Bounds {
@@ -37,6 +39,107 @@ export interface DrawingTableItem {
   frameTitle?: string | null
   /** 这张表在图纸上的范围：没画图框的图纸靠它定位 */
   box?: Bounds | null
+}
+
+/** 数量公式的一项：数值本身 + 它在图纸上的出处，供点击定位与当前页标红 */
+export interface FormulaPart {
+  /** 分项键，如「第 07 张」或「表 12」 */
+  label: string
+  text: string
+  /** 该分项对应的图纸页；旧数据或表号找不到图框时为空，此时只显示数值 */
+  source?: DrawingSource
+  /** 该分项是否被人工修正过，界面可据此提示并提供恢复入口 */
+  fixed?: boolean
+}
+
+export interface QuantityFormulaData {
+  parts: FormulaPart[]
+  total: string
+}
+
+const fmtQty = (value: number) =>
+  value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+
+/**
+ * 拆分数量计算式为可点击的分项：每个数值按分项键（第 N 张 / 表 N）找到对应图纸来源，
+ * 点数值即可像点页码一样定位，当前查看的页对应数值由调用方标红。
+ */
+export function quantityFormulaData(material?: {
+  quantityParts?: Record<string, number>
+  quantity?: number
+  unit?: string
+  sources?: DrawingSource[]
+}, fixedKeys?: Record<string, number>): QuantityFormulaData | null {
+  const entries = Object.entries(material?.quantityParts ?? {}).filter(([, value]) => value)
+  if (!entries.length) {
+    return null
+  }
+  const sources = material?.sources ?? []
+  const parts: FormulaPart[] = entries.map(([label, value]) => {
+    const sheet = /^第\s*(.+?)\s*张$/.exec(label)?.[1]
+    const tableNo = /^表\s*(\d+)$/.exec(label)?.[1]
+    const source = sources.find((item) =>
+      (sheet != null && (String(item.sheet) === sheet || String(item.frame) === sheet)) ||
+      (tableNo != null && item.tables.includes(Number(tableNo))),
+    )
+    return {
+      label,
+      text: fmtQty(value),
+      ...(source ? { source } : {}),
+      ...(fixedKeys && label in fixedKeys ? { fixed: true } : {}),
+    }
+  })
+  const total = material?.quantity ?? entries.reduce((sum, [, value]) => sum + value, 0)
+  return { parts, total: `${fmtQty(total)}${material?.unit ?? ''}` }
+}
+
+/**
+ * 把材料在图纸各表里的数量拼成计算式，供图纸定位弹窗展示：
+ * 「1 + 1 + 3 + 2 = 7 套」——只列分项数量相加，不显示「第 XX 张」页码。
+ * 分项全部列出，不折叠，公式末尾仍有合计便于核对。
+ */
+export function quantityFormula(material?: {
+  quantityParts?: Record<string, number>
+  quantity?: number
+  unit?: string
+  sources?: DrawingSource[]
+}): string {
+  const data = quantityFormulaData(material)
+  if (!data) {
+    return ''
+  }
+  return `${data.parts.map((part) => part.text).join(' + ')} = ${data.total}`
+}
+
+/** 人工修正：材料 key → 分项键（第 N 张 / 表 N）→ 修正后的数量 */
+export type QuantityFixes = Record<string, Record<string, number>>
+
+/** 汇总多张图纸各自的人工修正：同材料的分项按键合并 */
+export function mergeQuantityFixes(target: QuantityFixes, source?: QuantityFixes | null): void {
+  for (const [key, parts] of Object.entries(source ?? {})) {
+    target[key] = { ...(target[key] ?? {}), ...parts }
+  }
+}
+
+/**
+ * 把人工修正叠加到汇总后的材料上。修正只改分项并重算合计，
+ * 图纸清单与工程量清单的公式、差异对比都会随之更新。
+ */
+export function applyQuantityFixes(materials: DrawingMaterial[], fixes: QuantityFixes): void {
+  for (const material of materials) {
+    const partFixes = fixes[material.key]
+    if (!partFixes) {
+      continue
+    }
+    for (const [partKey, value] of Object.entries(partFixes)) {
+      if (partKey in material.quantityParts && Number.isFinite(value)) {
+        material.quantityParts[partKey] = value
+      }
+    }
+    material.quantity = round(
+      Object.values(material.quantityParts).reduce((sum, value) => sum + value, 0),
+    )
+  }
 }
 
 /** 图框（AI 服务 frames）：张号、图名与坐标范围，用于看图时定位到这一页 */
@@ -75,6 +178,8 @@ export interface DrawingMaterial {
   spec: string
   unit: string
   quantity: number
+  /** 图纸上这条材料的数量计算式分项，如「第2张 100 + 第4张 200」 */
+  quantityParts: Record<string, number>
   fileCount: number
   files: string[]
   /** 出现在哪几张图上，按图纸顺序 */
@@ -126,6 +231,8 @@ export interface DrawingLabelDoc {
   fileId: number
   fileName: string
   labels: import('@/api').DrawingTextLabel[]
+  /** 各图框页上的材料规格（图纸材料表），用于把段名命中页收敛到有对应光缆规格的页 */
+  frameSpecs?: Map<number, string[]>
 }
 
 /** 段落名命中的图纸来源：载着页码/图名/坐标，直接交给 DrawingJump 定位 */
@@ -149,6 +256,8 @@ const SEGMENT_LABEL_MIN = 8
 export function findSegmentDrawingHits(
   segmentName: string | undefined,
   docs: DrawingLabelDoc[],
+  /** 该段芯数对应的光缆规格（如 GYTS-12B1）：命中多页时只保留印有该规格材料表的页 */
+  spec = '',
 ): SegmentDrawingHit[] {
   const name = normalizeText(segmentName)
   if (!name) {
@@ -165,8 +274,12 @@ export function findSegmentDrawingHits(
         continue
       }
       const same = text === name
-      const contains = text.includes(name) || name.includes(text)
-      if (!same && !contains) {
+      // 图框上的整段名常和多段标题拼在一格（「段名A^J段名B」），
+      // 只有 text === name 会漏判；标注包含完整段名同样算整段命中。
+      // 反过来「标注是段名的一段」（端点地名）不算，避免误并进别的分幅页。
+      const whole = same || text.includes(name)
+      const contains = whole || name.includes(text)
+      if (!contains) {
         continue
       }
       // 只认落在图框里的标注：图框外的文字（图签、封面说明）没有页码，
@@ -179,7 +292,7 @@ export function findSegmentDrawingHits(
       const hit = grouped.get(groupKey)
       if (hit) {
         hit.count += 1
-        hit.whole = hit.whole || same
+        hit.whole = hit.whole || whole
         if (!hit.matched.includes(label.text)) {
           hit.matched.push(label.text)
         }
@@ -201,7 +314,7 @@ export function findSegmentDrawingHits(
         },
         matched: [label.text],
         count: 1,
-        whole: same,
+        whole,
         docIndex: docOrder.get(doc.fileId) ?? 0,
       })
     }
@@ -210,7 +323,24 @@ export function findSegmentDrawingHits(
   // 有整段名完全相等的页时只认这些页：端点地名会在多张图重复出现，
   // 一旦图上印了完整段名，端点包含命中的页就是噪音，必须丢掉。
   const exact = all.filter((hit) => hit.whole)
-  const picked = exact.length ? exact : all
+  let picked = exact.length ? exact : all
+  // 段名端点（如酒店SF1/SF3）可能在多张分幅图重复印出，但只有一页印了该段光缆
+  // 规格的材料表。传入规格时收敛到那些页，避免关联一堆印了站名却没有对应光缆的页。
+  if (spec) {
+    const target = normalizeText(spec)
+    const hasSpec = picked.filter((hit) => {
+      const frame = hit.source.frame
+      if (frame == null) {
+        return false
+      }
+      const doc = docs.find((item) => item.fileId === hit.source.fileId)
+      const specs = doc?.frameSpecs?.get(frame) ?? []
+      return specs.some((item) => normalizeText(item).includes(target) || target.includes(normalizeText(item)))
+    })
+    if (hasSpec.length) {
+      picked = hasSpec
+    }
+  }
   // 按图纸页次序展示：先文件顺序，再图框序号（no 即「第几张」）；无图框的排最后
   return picked
     .sort((a, b) => {
@@ -265,9 +395,22 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
       const unit = (item.unit ?? '').trim()
       const key = `${normalizeText(name)}|${normalizeText(spec)}|${normalizeUnit(unit)}`
       const sources = sourcesOf(item.tables, tablesByNo, framesByNo, fileId, fileName)
+      // 数量分项：表号映射到所在张号，显示成「第 N 张 数量 + … = 合计」
+      const parts: Record<string, number> = {}
+      Object.entries(item.quantityParts ?? {}).forEach(([tableNo, value]) => {
+        const table = tablesByNo.get(Number(tableNo))
+        const sheet = table?.frameSheet
+        const partKey = sheet ? `第 ${sheet} 张` : `表 ${tableNo}`
+        parts[partKey] = round((parts[partKey] ?? 0) + Number(value))
+      })
+      // 没有逐表分项就不造「数量 = 合计」的占位项——那不是分页相加公式，
+      // 会在图纸定位弹窗里显示成误导性的「数量 6 = 6处」。无分项时留空，不显示公式。
       const hit = merged.get(key)
       if (hit) {
         hit.quantity = round(hit.quantity + quantity)
+        Object.entries(parts).forEach(([partKey, value]) => {
+          hit.quantityParts[partKey] = round((hit.quantityParts[partKey] ?? 0) + value)
+        })
         if (!hit.files.includes(fileName)) {
           hit.files.push(fileName)
           hit.fileCount = hit.files.length
@@ -281,6 +424,7 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
         spec,
         unit,
         quantity: round(quantity),
+        quantityParts: parts,
         fileCount: 1,
         files: [fileName],
         sources,

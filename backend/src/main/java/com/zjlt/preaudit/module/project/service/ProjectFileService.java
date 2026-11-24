@@ -24,6 +24,7 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -129,6 +130,8 @@ public class ProjectFileService {
     }
 
     private void parseDrawing(ProjectFile file) {
+        // 重新解析以 AI 结果为准：整体替换 parse_result，旧的人工修正不再带入，
+        // 图纸清单上的「已改」标记随之清空，避免旧修正盖在新解析值上造成错值。
         Path path = storage.resolve(file.getStoragePath());
         Optional<Map<String, Object>> result = aiClient.parseDrawing(path, file.getFileName());
         if (result.isEmpty()) {
@@ -145,6 +148,60 @@ public class ProjectFileService {
         }
         String message = String.valueOf(data.getOrDefault("summary", "图纸解析完成"));
         updateStatus(file, Dict.PARSE_SUCCESS, null, message, JsonUtil.toJson(data));
+    }
+
+    /**
+     * 保存人工修正的数量分项：材料标识 → 分项键 → 数值，写回 parse_result 的独立字段，
+     * 不动 AI 原始解析数据；重新解析时由 parseDrawing 原样带过去。
+     */
+    public void saveQuantityFix(Long fileId, String materialKey, String partKey, BigDecimal value) {
+        if (value == null || value.signum() < 0) {
+            throw new BizException("修正数量必须是非负数");
+        }
+        ProjectFile file = requireFile(fileId);
+        Map<String, Object> data = new LinkedHashMap<>(JsonUtil.toMap(file.getParseResult()));
+        Object rawFixes = data.get("manualQuantityFixes");
+        Map<String, Object> fixes = rawFixes instanceof Map
+                ? new LinkedHashMap<>(castMap(rawFixes)) : new LinkedHashMap<>();
+        Object rawParts = fixes.get(materialKey);
+        Map<String, Object> parts = rawParts instanceof Map
+                ? new LinkedHashMap<>(castMap(rawParts)) : new LinkedHashMap<>();
+        parts.put(partKey, value);
+        fixes.put(materialKey, parts);
+        data.put("manualQuantityFixes", fixes);
+        updateStatus(file, file.getParseStatus(), file.getParseRate(), file.getParseMessage(), JsonUtil.toJson(data));
+    }
+
+    /** 删除单条人工修正（恢复 AI 原始解析值） */
+    public void deleteQuantityFix(Long fileId, String materialKey, String partKey) {
+        ProjectFile file = requireFile(fileId);
+        Map<String, Object> data = new LinkedHashMap<>(JsonUtil.toMap(file.getParseResult()));
+        Object rawFixes = data.get("manualQuantityFixes");
+        if (!(rawFixes instanceof Map)) {
+            return;
+        }
+        Map<String, Object> fixes = new LinkedHashMap<>(castMap(rawFixes));
+        Object rawParts = fixes.get(materialKey);
+        if (rawParts instanceof Map) {
+            Map<String, Object> parts = new LinkedHashMap<>(castMap(rawParts));
+            parts.remove(partKey);
+            if (parts.isEmpty()) {
+                fixes.remove(materialKey);
+            } else {
+                fixes.put(materialKey, parts);
+            }
+        }
+        if (fixes.isEmpty()) {
+            data.remove("manualQuantityFixes");
+        } else {
+            data.put("manualQuantityFixes", fixes);
+        }
+        updateStatus(file, file.getParseStatus(), file.getParseRate(), file.getParseMessage(), JsonUtil.toJson(data));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> castMap(Object value) {
+        return (Map<String, Object>) value;
     }
 
     private void updateStatus(ProjectFile file, String status, BigDecimal rate, String message, String resultJson) {

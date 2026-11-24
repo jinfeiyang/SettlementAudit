@@ -126,8 +126,8 @@ async def chat(task_type: str, prompt: str, context: dict[str, Any] | None = Non
             usage = body.get("usage") or {}
             tokens = int(usage.get("total_tokens") or 0)
             logger.info("LLM 调用成功 task=%s model=%s tokens=%s", task_type, body.get("model"), tokens)
-            # 文本类任务去掉模型常带的 json 代码围栏；ALIGN 需保留 JSON 供结构化校验
-            result_content = content.strip() if task_type == "ALIGN" else _plain_text(content)
+            # 文本类任务去掉模型常带的 json 代码围栏；结构化任务保留 JSON 供调用方解析并校验引用
+            result_content = content.strip() if task_type in {"ALIGN", "ATTRIBUTION"} else _plain_text(content)
             return {
                 "content": result_content,
                 "model": body.get("model") or settings.llm_model,
