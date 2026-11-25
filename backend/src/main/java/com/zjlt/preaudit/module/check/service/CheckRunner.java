@@ -34,7 +34,12 @@ import java.util.Optional;
 
 /**
  * 核查执行器：清单逐行核算 → 定额三级匹配 → 取费核查 → 疑点分级入库。
- * 说明：全部判定为确定性规则；LLM 仅生成归因解释（ai_note），不参与金额与结论。
+ *
+ * <p>分级口径（不再用「确定/需复核/提示」当级别别名）：
+ * 高＝证据完整且偏差达到高风险阈值（数量/金额一致性错误、有价行未套定额、取费偏差大且可核算行占比≥80%）；
+ * 中＝证据完整但偏差较小，或匹配靠语义召回/单位换算、图纸无对应、取费基数含估算值；
+ * 低＝信息不足无法判定，仅作提示。
+ * LLM 仅生成归因解释（ai_note），不参与金额与结论。
  */
 @Slf4j
 @Component
@@ -61,6 +66,9 @@ public class CheckRunner {
 
     @Value("${preaudit.check.fee-deviation-high-threshold:0.15}")
     private BigDecimal feeHighThreshold;
+
+    /** 可核算行占比低于该值时取费基数靠估算，证据不足，偏差再大也只给中风险 */
+    private static final BigDecimal FEE_FULL_COVERAGE = new BigDecimal("80");
 
     @Async("checkExecutor")
     public void runAsync(Long taskId) {
@@ -235,10 +243,17 @@ public class CheckRunner {
                     .map(c -> c.quotaCode() + " " + c.quotaName() + "（" + c.score().toPlainString() + "）")
                     .reduce((a, b) -> a + "；" + b).orElse("无");
             if (match.level() == 3) {
-                issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_HIGH, "B1-MISS",
+                // 有结算价/单价的行未套定额会直接影响金额，按高风险处理；
+                // 表三甲这类无价行更可能是规则库缺项或计价口径不同，先按需复核处理，不一刀切判高。
+                boolean charged = (item.getUnitPrice() != null && item.getUnitPrice().signum() > 0)
+                        || (item.getTotalPrice() != null && item.getTotalPrice().signum() > 0);
+                issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA,
+                        charged ? Dict.LEVEL_HIGH : Dict.LEVEL_MEDIUM, "B1-MISS",
                         "未匹配到定额子目（错套/缺套风险）",
                         where + " 清单未填定额编号，" + match.message() + "。候选：" + candidates
-                                + "。建议补填定额编号，或在「规则库-定额子目」补充后再核查。"));
+                                + "。" + (charged ? "该行有单价/合价，未套定额会直接影响送审金额。"
+                                : "该行无单价/合价，可能是规则库缺项或计价口径不同，先按需复核处理。")
+                                + "建议补填定额编号，或在「规则库-定额子目」补充后再核查。"));
             } else if (match.level() == 2) {
                 issues.add(issue(projectId, item, rowRef, Dict.ISSUE_QUOTA, Dict.LEVEL_MEDIUM, "B1-SEMANTIC",
                         "定额套用需复核（语义召回命中）",
@@ -327,6 +342,11 @@ public class CheckRunner {
             return;
         }
         int level = abs.compareTo(feeHighThreshold) > 0 ? Dict.LEVEL_HIGH : Dict.LEVEL_MEDIUM;
+        // 证据充分度：基数里有大量估算值时不能下确定结论，降级为中风险并在明细里说明
+        boolean weakEvidence = fee.coverage().compareTo(FEE_FULL_COVERAGE) < 0;
+        if (weakEvidence && level == Dict.LEVEL_HIGH) {
+            level = Dict.LEVEL_MEDIUM;
+        }
         StringBuilder detail = new StringBuilder();
         detail.append("按现行取费规则核算：直接费 ").append(fee.directCost().toPlainString())
                 .append(" 元（其中按定额基价估算 ").append(fee.estimatedAmount().toPlainString())
@@ -337,6 +357,9 @@ public class CheckRunner {
                 .append(" 元；送审金额 ").append(fee.settleAmount().toPlainString())
                 .append(" 元，偏差 ").append(fee.deviation().multiply(BigDecimal.valueOf(100))
                         .setScale(2, RoundingMode.HALF_UP).toPlainString()).append("%。");
+        if (weakEvidence) {
+            detail.append("可核算行占比低于 80%，取费基数含估算值，证据不足，已按中风险列出，需人工确认。");
+        }
         detail.append("取费明细：");
         fee.lines().forEach(line -> detail.append(line.feeName()).append("（基数 ")
                 .append(line.base().toPlainString()).append(" × 费率 ")
@@ -371,10 +394,10 @@ public class CheckRunner {
             Map.entry("B0-QTY", "工程量必须大于 0，否则无法核算"),
             Map.entry("B0-PRICE", "综合单价应大于 0；有合价时必须能取到单价"),
             Map.entry("B0-AMOUNT", "合价应等于数量×综合单价，允许 ±1 元舍入差"),
-            Map.entry("B1-MISS", "清单行应套用定额子目，未匹配或相似度过低按错套/缺套处理"),
+            Map.entry("B1-MISS", "清单行应套用定额子目；有单价/合价的未匹配行判高，无价行按规则库缺项判中"),
             Map.entry("B1-SEMANTIC", "语义召回命中但非精确匹配，需人工确认定额选择"),
             Map.entry("B1-CONVERT", "图纸与清单单位口径不同时按换算系数折算后比较"),
-            Map.entry("B2-FEE-DEVIATION", "取费按规则库基数公式与费率核算，偏差超 5% 报中风险、超 15% 报高风险"),
+            Map.entry("B2-FEE-DEVIATION", "取费按规则库基数公式与费率核算：偏差超 5% 报中、超 15% 报高；可核算行占比低于 80% 时最高只报中"),
             Map.entry("B2-NO-RULE", "规则库缺少本工程类型的取费规则，取费核查无法执行"),
             Map.entry("B2-NO-SETTLE", "结算送审金额为空时无法比较取费偏差"),
             Map.entry("B2-NO-PRICE", "可核算行占比低于 50% 时取费基数不可信，不判定偏差"),

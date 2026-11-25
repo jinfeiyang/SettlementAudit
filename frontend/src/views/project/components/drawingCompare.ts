@@ -1,5 +1,6 @@
 import type { BoqItemVO, MaterialMergeVO } from '@/api'
 import {
+  canonicalName,
   charOverlap,
   featureConflicts,
   normalizeText,
@@ -395,7 +396,8 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
       }
       const spec = (item.spec ?? '').trim()
       const unit = (item.unit ?? '').trim()
-      const key = `${normalizeText(name)}|${normalizeText(spec)}|${normalizeUnit(unit)}`
+      // 同物异名（新立光交 / 新建光缆交接箱）合成一行，否则同一件器材会被拆成 1+1
+      const key = `${canonicalName(name)}|${normalizeText(spec)}|${normalizeUnit(unit)}`
       const sources = sourcesOf(item.tables, tablesByNo, framesByNo, fileId, fileName)
       // 数量分项：表号映射到所在张号，显示成「第 N 张 数量 + … = 合计」
       const parts: Record<string, number> = {}
@@ -410,6 +412,10 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
       const hit = merged.get(key)
       if (hit) {
         hit.quantity = round(hit.quantity + quantity)
+        // 合并后展示更完整的写法（字多的一般是全称）
+        if (name.length > hit.name.length) {
+          hit.name = name
+        }
         Object.entries(parts).forEach(([partKey, value]) => {
           hit.quantityParts[partKey] = round((hit.quantityParts[partKey] ?? 0) + value)
         })
@@ -667,8 +673,9 @@ function mergeSources(target: DrawingSource[], incoming: DrawingSource[]) {
  * 再按名称相似度给基础分，规格与清单特征吻合、物资行、单位口径一致分别小幅加分。
  */
 function scorePair(material: DrawingMaterial, item: BoqItemVO): number {
-  const drawingName = normalizeText(material.name)
-  const boqName = normalizeText(item.itemName)
+  // 先按同物异名归一：图纸「新立光交」与清单「光缆交接箱」是同一件器材
+  const drawingName = canonicalName(material.name)
+  const boqName = canonicalName(item.itemName)
   if (!drawingName || !boqName) {
     return 0
   }
@@ -688,10 +695,10 @@ function scorePair(material: DrawingMaterial, item: BoqItemVO): number {
     const longer = Math.max(drawingName.length, boqName.length)
     base = 0.7 + 0.25 * (shorter / longer)
   } else {
-    base = similarity(material.name, item.itemName)
+    base = similarity(drawingName, boqName)
   }
   // 「ODF框」对「ODF架」这类只差一个字的口径写法，双字切分算不出相似度，用字符重合度兜底
-  const overlap = charOverlap(material.name, item.itemName)
+  const overlap = charOverlap(drawingName, boqName)
   if (overlap > base) {
     base = Math.min(0.9, overlap)
   }

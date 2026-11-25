@@ -1396,8 +1396,41 @@ def _normalize_quota_cells(tables: list[dict[str, Any]]) -> None:
             row[code_col] = code
 
 
+# 材料的同物异名归一：「光交」是「光缆交接箱」的图上简称，「新建/新立」是施工动作、不是材料名。
+# 口径必须与后端 TextUtil.canonicalName、前端 match.ts 的 canonicalName 保持一致（三处同步改）。
+_OPTICAL_JOINT_BOX_SHORT = re.compile(r"光交(?!换)")
+_OPTICAL_JOINT_BOX = re.compile(r"交接箱")
+_ODF_VARIANT = re.compile(r"odf(?:子?[框架])?", re.IGNORECASE)
+_NEW_BUILD_PREFIX = re.compile(r"^(?:新建|新立|新设|新购|新装)")
+
+
+def canonical_material_name(raw: str) -> str:
+    """把同一件器材的不同写法收成一个名字，供图纸材料表内同类合并用。
+
+    例：`新立光交` / `新建光缆交接箱` → `光缆交接箱`；
+    `光交底座砂浆抹面` / `光交砂浆抹面` → `光缆交接箱砂浆抹面`。
+    只做名称层面的归一，不改规格与单位——规格/单位不同的仍是两种材料。
+    """
+    name = (raw or "").strip()
+    if not name:
+        return ""
+    # 「底座砂浆抹面」与「砂浆抹面」是同一条清单项，中间那两个字是图上顺手写的
+    name = name.replace("底座砂浆抹面", "砂浆抹面").replace("底座", "基座")
+    if "光缆交接箱" not in name:
+        if _OPTICAL_JOINT_BOX_SHORT.search(name):
+            name = _OPTICAL_JOINT_BOX_SHORT.sub("光缆交接箱", name)
+        else:
+            name = _OPTICAL_JOINT_BOX.sub("光缆交接箱", name)
+    name = _ODF_VARIANT.sub("odf", name)
+    return _NEW_BUILD_PREFIX.sub("", name).strip()
+
+
 def summarize_materials(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按「名称 + 规格 + 单位」汇总各表数量，得到归纳统计表。"""
+    """按「规范名称 + 规格 + 单位」汇总各表数量，得到归纳统计表。
+
+    名称先过同物异名归一（见 canonical_material_name）：同一件器材在图上被写成
+    「新建光缆交接箱」和「新立光交」时，不归一就会变成两行各 1 个，与清单的 2 套对不上。
+    """
     merged: dict[tuple[str, str, str], dict[str, Any]] = {}
     for table in tables:
         columns = table["columns"]
@@ -1418,10 +1451,13 @@ def summarize_materials(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             spec = row[spec_col].strip() if spec_col is not None and spec_col < len(row) else ""
             unit = row[unit_col].strip() if unit_col is not None and unit_col < len(row) else ""
-            key = (name, spec, unit)
+            key = (canonical_material_name(name), spec, unit)
             item = merged.setdefault(key, {"name": name, "spec": spec, "unit": unit,
                                            "quantity": 0.0, "tables": [],
                                            "quantityParts": {}})
+            # 合并后展示更完整的那个写法（字多的一般是全称），但不改材料键
+            if len(name) > len(item["name"]):
+                item["name"] = name
             item["quantity"] += qty
             if table["table"] not in item["tables"]:
                 item["tables"].append(table["table"])
@@ -1533,6 +1569,20 @@ _WORKLOAD_ITEM_RE = re.compile(
 # 名称里的规格：安装24芯分纤箱 / 光缆24芯 / 安装48芯ODF子框
 _NAME_SPEC_RE = re.compile(r"(?P<spec>\d+(?:\.\d+)?)\s*芯")
 
+# 同一块「工作量」标注里常混着不带冒号的写法：「新建576芯光缆交接箱1个」「户外接地母线3米」。
+# 只认「整行就是 名称+数量+单位」，且单位必须是清单里常见的计量单位：
+# 「工作量以200米计取」这类说明句因为行尾还有字，匹配不上；「12#杆」「第2张」也没有单位。
+_WORKLOAD_BARE_UNITS = (
+    "立方米|平方米|千米条|百立方米|十米条|百米|千米|米|吨|kg"
+    "|个|根|条|块|段|处|套|台|架|组|盘|只|张|副|座|芯"
+)
+_WORKLOAD_BARE_RE = re.compile(
+    r"^(?P<name>[^：:\s\d][^：:\s]{0,28}?)\s*(?P<qty>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>" + _WORKLOAD_BARE_UNITS + r")$"
+)
+# 「合计100米」这类汇总行不是材料
+_WORKLOAD_RECAP_WORDS = ("合计", "小计", "总计", "共计")
+
 
 def _split_name_spec(name: str) -> tuple[str, str]:
     """把「安装24芯分纤箱」拆成名称「安装分纤箱」+ 规格「24芯」，便于和清单逐项比对。"""
@@ -1547,6 +1597,12 @@ def _split_name_spec(name: str) -> tuple[str, str]:
 def _tables_from_workload(doc) -> list[dict[str, Any]]:
     """画法三：图上的「工作量：光缆24芯：549米」文字标注（没有画表格的竣工图）。
 
+    同一块标注里两种写法都要认：
+      - 带冒号「光缆48芯：3463米」
+      - 不带冒号「新建576芯光缆交接箱1个」「户外接地母线3米」
+    竣工图常把一部分行套上颜色（{\\C256;...}）连着写，之前整组被当成格式码漏掉；
+    这里先按 \\P 拆行再逐行解析，无冒号的行按「整行 = 名称+数量+单位」认。
+
     每个含「工作量」的 MTEXT/TEXT 生成一张虚拟材料表，列统一为
     材料名称 / 规格 / 单位 / 数量，后续归纳、图页归属与清单比对复用既有流程。
     """
@@ -1558,13 +1614,20 @@ def _tables_from_workload(doc) -> list[dict[str, Any]]:
         raw = entity.dxf.text if etype == "TEXT" else entity.text
         if not raw or "工作量" not in raw:
             continue
-        text = clean_annotation(raw)
         rows: list[list[str]] = []
-        for match in _WORKLOAD_ITEM_RE.finditer(text):
-            name, spec = _split_name_spec(match.group("name"))
-            if not name:
+        for line in re.split(r"\\[Pp]", raw):
+            text = clean_annotation(line)
+            if not text:
                 continue
-            rows.append([name, spec, match.group("unit"), match.group("qty")])
+            for match in _WORKLOAD_ITEM_RE.finditer(text):
+                name, spec = _split_name_spec(match.group("name"))
+                if name:
+                    rows.append([name, spec, match.group("unit"), match.group("qty")])
+            bare = _WORKLOAD_BARE_RE.match(text)
+            if bare:
+                name, spec = _split_name_spec(bare.group("name"))
+                if name and not any(word in name for word in _WORKLOAD_RECAP_WORDS):
+                    rows.append([name, spec, bare.group("unit"), bare.group("qty")])
         if not rows:
             continue
         try:

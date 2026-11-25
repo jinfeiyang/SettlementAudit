@@ -4,7 +4,13 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.util.JsonUtil;
 import com.zjlt.preaudit.common.util.TextUtil;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingEdit;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingMatch;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingMerge;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingEditMapper;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMatchMapper;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMergeMapper;
 import com.zjlt.preaudit.module.issue.entity.Issue;
 import com.zjlt.preaudit.module.project.entity.Project;
 import com.zjlt.preaudit.module.project.entity.ProjectFile;
@@ -18,9 +24,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -45,6 +53,9 @@ import java.util.regex.Pattern;
 public class DrawingCheckService {
 
     private final ProjectFileMapper projectFileMapper;
+    private final BoqDrawingMatchMapper drawingMatchMapper;
+    private final BoqDrawingMergeMapper drawingMergeMapper;
+    private final BoqDrawingEditMapper drawingEditMapper;
 
     /** 图纸数量相对清单数量的偏差告警阈值（0~1） */
     @Value("${preaudit.check.drawing-deviation-threshold:0.05}")
@@ -61,8 +72,16 @@ public class DrawingCheckService {
     /** 单次核查最多出多少条图纸疑点，避免材料行很多时刷屏 */
     private static final int MAX_ISSUES = 200;
 
-    /** 「24芯」「24 芯」 */
-    private static final Pattern CORE_PATTERN = Pattern.compile("(\\d{1,3})\\s*芯");
+    /**
+     * 计件单位：同一件设备/器材，清单写「套」、图纸写「个」是同一批数量，按 1:1 比。
+     * 与前端 match.ts 的 unitFamily 口径保持一致，否则界面标了匹配、疑点里却是「图纸无对应」。
+     */
+    private static final Set<String> COUNT_UNITS = Set.of(
+            "个", "台", "套", "架", "组", "块", "面", "只", "件", "条", "根", "处", "端", "芯",
+            "盘", "卷", "座");
+
+    /** 「24芯」「24 芯」；「288芯以上」是定额的范围写法，不是具体芯数 */
+    private static final Pattern CORE_PATTERN = Pattern.compile("(\\d{1,3})\\s*芯(?!\\s*[及以]?[上下])");
     /** 光缆型号里的芯数：GYTS-48B1 / GYTA53-96B1.2 */
     private static final Pattern CORE_MODEL_PATTERN = Pattern.compile("(?i)(\\d{1,3})\\s*b\\s*\\d");
 
@@ -95,17 +114,105 @@ public class DrawingCheckService {
             return List.of();
         }
 
-        List<Issue> issues = evaluate(project.getId(), items, materials, parsedFiles);
+        // 人工结论优先：图纸材料的合并/改名/改量与清单行的手工匹配，都要在核查前叠加
+        applyManualMaterialOverrides(project.getId(), materials);
+        Map<Long, BoqDrawingMatch> manualMatches = new HashMap<>();
+        for (BoqDrawingMatch match : drawingMatchMapper.selectList(Wrappers.<BoqDrawingMatch>lambdaQuery()
+                .eq(BoqDrawingMatch::getProjectId, project.getId()))) {
+            if (match.getBoqItemId() != null) {
+                manualMatches.put(match.getBoqItemId(), match);
+            }
+        }
+
+        List<Issue> issues = evaluate(project.getId(), items, materials, parsedFiles, manualMatches);
         log.info("图纸-清单核对完成 projectId={} 图纸 {} 张，材料 {} 种，疑点 {} 条",
                 project.getId(), parsedFiles.size(), materials.size(), issues.size());
         return issues;
     }
 
+    /**
+     * 叠加图纸侧的人工结论，顺序与前端 DrawingBoqPanel 一致：
+     * 先按原键改名改量 → 合并组求和（合并行以 groupKey 为键）→ 再按合并键改名改量。
+     * 不叠加的话，界面上看到的是人工处理后的行，疑点却按 AI 原始数据算，结论对不上。
+     */
+    private void applyManualMaterialOverrides(Long projectId, Map<String, DrawingMaterial> materials) {
+        List<BoqDrawingEdit> edits = drawingEditMapper.selectList(Wrappers.<BoqDrawingEdit>lambdaQuery()
+                .eq(BoqDrawingEdit::getProjectId, projectId));
+        List<BoqDrawingMerge> merges = drawingMergeMapper.selectList(Wrappers.<BoqDrawingMerge>lambdaQuery()
+                .eq(BoqDrawingMerge::getProjectId, projectId));
+
+        for (BoqDrawingEdit edit : edits) {
+            applyMaterialEdit(materials, edit);
+        }
+
+        Map<String, List<String>> membersByGroup = new LinkedHashMap<>();
+        Map<String, String> displayNames = new HashMap<>();
+        for (BoqDrawingMerge merge : merges) {
+            if (merge.getGroupKey() == null || merge.getMemberKey() == null) {
+                continue;
+            }
+            membersByGroup.computeIfAbsent(merge.getGroupKey(), k -> new ArrayList<>()).add(merge.getMemberKey());
+            if (merge.getDisplayName() != null && !merge.getDisplayName().isBlank()) {
+                displayNames.put(merge.getGroupKey(), merge.getDisplayName().trim());
+            }
+        }
+        for (Map.Entry<String, List<String>> group : membersByGroup.entrySet()) {
+            List<String> keys = group.getValue();
+            if (keys.size() < 2) {
+                continue;
+            }
+            List<DrawingMaterial> members = new ArrayList<>();
+            for (String key : keys) {
+                DrawingMaterial member = materials.get(key);
+                if (member != null) {
+                    members.add(member);
+                }
+            }
+            if (members.size() < 2) {
+                continue;
+            }
+            DrawingMaterial first = members.get(0);
+            BigDecimal quantity = BigDecimal.ZERO;
+            Set<String> files = new LinkedHashSet<>();
+            for (DrawingMaterial member : members) {
+                quantity = quantity.add(member.quantity());
+                files.addAll(member.files());
+            }
+            String name = displayNames.getOrDefault(group.getKey(), first.name());
+            keys.forEach(materials::remove);
+            materials.put(group.getKey(),
+                    new DrawingMaterial(name, first.spec(), first.unit(), quantity, new ArrayList<>(files)));
+        }
+
+        // 合并行本身被人工改名/改量时，前端也是合并后再覆盖一次
+        for (BoqDrawingEdit edit : edits) {
+            applyMaterialEdit(materials, edit);
+        }
+    }
+
+    private void applyMaterialEdit(Map<String, DrawingMaterial> materials, BoqDrawingEdit edit) {
+        DrawingMaterial current = materials.get(edit.getMaterialKey());
+        if (current == null) {
+            return;
+        }
+        String name = edit.getName() == null || edit.getName().isBlank()
+                ? current.name() : edit.getName().trim();
+        String spec = edit.getSpec() == null ? current.spec() : edit.getSpec();
+        String unit = edit.getUnit() == null ? current.unit() : edit.getUnit();
+        BigDecimal quantity = edit.getQuantity() == null ? current.quantity() : edit.getQuantity();
+        materials.put(edit.getMaterialKey(), new DrawingMaterial(name, spec, unit, quantity, current.files()));
+    }
+
     /** 比对本体：脱离数据库的纯计算，便于单测 */
     List<Issue> evaluate(Long projectId, List<BoqItem> items, Map<String, DrawingMaterial> materials,
                          List<String> parsedFiles) {
+        return evaluate(projectId, items, materials, parsedFiles, Map.of());
+    }
+
+    List<Issue> evaluate(Long projectId, List<BoqItem> items, Map<String, DrawingMaterial> materials,
+                         List<String> parsedFiles, Map<Long, BoqDrawingMatch> manualMatches) {
         List<Issue> issues = new ArrayList<>();
-        checkMaterials(projectId, items, materials, parsedFiles, issues);
+        checkMaterials(projectId, items, materials, parsedFiles, issues, manualMatches);
         return issues;
     }
 
@@ -115,9 +222,17 @@ public class DrawingCheckService {
 
     private void checkMaterials(Long projectId, List<BoqItem> items,
                                 Map<String, DrawingMaterial> materials, List<String> parsedFiles,
-                                List<Issue> issues) {
+                                List<Issue> issues, Map<Long, BoqDrawingMatch> manualMatches) {
         if (materials.isEmpty()) {
             return;
+        }
+        // 人工指定过的材料不再自动挂到别的清单行，与前端 applyMatchOverrides 的口径一致
+        Set<String> manualKeys = new LinkedHashSet<>();
+        for (BoqDrawingMatch match : manualMatches.values()) {
+            if ("MATCH".equals(match.getManualType()) && match.getDrawingKey() != null
+                    && !match.getDrawingKey().isBlank()) {
+                manualKeys.add(match.getDrawingKey().trim());
+            }
         }
         for (BoqItem item : items) {
             if (issues.size() >= MAX_ISSUES) {
@@ -131,13 +246,29 @@ public class DrawingCheckService {
             // 对这类行同样标红，两边结论必须对得上。
             // 命中材料后照常比数量，只要单位可换算（同口径）；单位不可比的才跳过。
             boolean quotaRow = item.getItemType() == null || Dict.BOQ_QUOTA.equals(item.getItemType());
+            BoqDrawingMatch manual = item.getId() == null ? null : manualMatches.get(item.getId());
+            if (manual != null && "UNMATCH".equals(manual.getManualType())) {
+                continue;  // 人工取消匹配：这一行不再与任何图纸材料比量
+            }
             DrawingMaterial best = null;
             double bestScore = 0d;
-            for (DrawingMaterial material : materials.values()) {
-                double score = score(item, material);
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = material;
+            if (manual != null && "MATCH".equals(manual.getManualType())
+                    && manual.getDrawingKey() != null && !manual.getDrawingKey().isBlank()) {
+                best = materials.get(manual.getDrawingKey().trim());
+                if (best == null) {
+                    continue;  // 人工指定的材料在图纸里已不存在（如重新解析后），不能拿自动结果顶上
+                }
+                bestScore = 1d;
+            } else {
+                for (Map.Entry<String, DrawingMaterial> entry : materials.entrySet()) {
+                    if (manualKeys.contains(entry.getKey())) {
+                        continue;
+                    }
+                    double score = score(item, entry.getValue());
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = entry.getValue();
+                    }
                 }
             }
             String rowRef = item.getRowNo() == null ? "-" : String.valueOf(item.getRowNo());
@@ -155,14 +286,11 @@ public class DrawingCheckService {
             }
             BigDecimal drawingQty = best.quantity();
             BigDecimal itemQty = item.getQuantity();
-            if (unitConvertible(item.getUnit(), best.unit())) {
-                BigDecimal factor = TextUtil.unitFactor(item.getUnit(), best.unit());
-                if (factor != null) {
-                    itemQty = itemQty.multiply(factor);
-                }
-            } else {
+            BigDecimal factor = factorOf(item.getUnit(), best.unit());
+            if (factor == null) {
                 continue;  // 单位不同族（米 vs 个），数量不可比
             }
+            itemQty = itemQty.multiply(factor);
             if (drawingQty.signum() <= 0 || itemQty.signum() <= 0) {
                 continue;
             }
@@ -171,9 +299,9 @@ public class DrawingCheckService {
                 continue;
             }
             boolean less = rate.signum() < 0;
-            int level = less
-                    ? (rate.abs().compareTo(highThreshold) >= 0 ? Dict.LEVEL_HIGH : Dict.LEVEL_MEDIUM)
-                    : Dict.LEVEL_LOW;
+            // 分级只看偏差幅度与证据充分度，与「偏大/偏小」方向无关：
+            // 达到高风险阈值（默认 20%）给高，达到告警阈值（默认 5%）给中。
+            int level = rate.abs().compareTo(highThreshold) >= 0 ? Dict.LEVEL_HIGH : Dict.LEVEL_MEDIUM;
             String title = String.format("图纸数量比清单%s %s%%：%s", less ? "偏小" : "偏大",
                     rate.abs().multiply(BigDecimal.valueOf(100)).setScale(1, RoundingMode.HALF_UP).toPlainString(),
                     TextUtil.truncate(item.getItemName(), 40));
@@ -190,10 +318,13 @@ public class DrawingCheckService {
         }
     }
 
-    /** 清单行 vs 图纸材料的匹配分：名称相似度 + 完全包含加成，单位/规格冲突直接排除 */
+    /**
+     * 清单行 vs 图纸材料的匹配分：名称相似度 + 完全包含加成，单位/规格冲突直接排除。
+     * 名称先过一道同物异名归一：图纸上的「新立光交」与清单「光缆交接箱」是同一件器材。
+     */
     private double score(BoqItem item, DrawingMaterial material) {
-        String itemName = TextUtil.normalize(item.getItemName());
-        String drawName = TextUtil.normalize(material.name());
+        String itemName = TextUtil.canonicalName(item.getItemName());
+        String drawName = TextUtil.canonicalName(material.name());
         if (itemName.isBlank() || drawName.isBlank()) {
             return 0d;
         }
@@ -203,7 +334,7 @@ public class DrawingCheckService {
         if (coreConflicts(item, material)) {
             return 0d;
         }
-        double score = TextUtil.similarity(item.getItemName(), material.name());
+        double score = TextUtil.similarity(itemName, drawName);
         if (drawName.contains(itemName) || itemName.contains(drawName)) {
             score = Math.max(score, 0.72);
         }
@@ -262,7 +393,9 @@ public class DrawingCheckService {
             if (name.isBlank() || quantity == null || quantity.signum() <= 0) {
                 continue;
             }
-            String key = TextUtil.normalize(name) + "|" + TextUtil.normalize(spec);
+            // 同物异名（新立光交 / 新建光缆交接箱）按规范名合并；单位不同（个 vs 头）不能相加
+            String key = TextUtil.canonicalName(name) + "|" + TextUtil.normalize(spec)
+                    + "|" + TextUtil.normalizeUnit(unit);
             DrawingMaterial exist = materials.get(key);
             if (exist == null) {
                 List<String> files = new ArrayList<>();
@@ -272,7 +405,9 @@ public class DrawingCheckService {
                 if (!exist.files().contains(fileName)) {
                     exist.files().add(fileName);
                 }
-                materials.put(key, new DrawingMaterial(exist.name(), exist.spec(), exist.unit(),
+                // 合并后展示更完整的写法（字多的一般是全称）
+                String mergedName = name.length() > exist.name().length() ? name : exist.name();
+                materials.put(key, new DrawingMaterial(mergedName, exist.spec(), exist.unit(),
                         exist.quantity().add(quantity), exist.files()));
             }
         }
@@ -284,7 +419,21 @@ public class DrawingCheckService {
         if (a.isBlank() || b.isBlank() || a.equals(b)) {
             return true;
         }
-        return TextUtil.unitFactor(a, b) != null;
+        return factorOf(a, b) != null;
+    }
+
+    /** 清单数量换算到图纸单位的系数；计件单位互通（套↔个），长度/面积/体积各自换算 */
+    private BigDecimal factorOf(String itemUnit, String drawingUnit) {
+        String a = TextUtil.normalizeUnit(itemUnit);
+        String b = TextUtil.normalizeUnit(drawingUnit);
+        // 有一侧没写单位时按 1:1 比：清单与图纸都缺单位的情况多半是同一口径，先给结论让人复核
+        if (a.isBlank() || b.isBlank() || a.equals(b)) {
+            return BigDecimal.ONE;
+        }
+        if (COUNT_UNITS.contains(a) && COUNT_UNITS.contains(b)) {
+            return BigDecimal.ONE;
+        }
+        return TextUtil.unitFactor(a, b);
     }
 
     /** 图纸相对清单的偏差率：(图纸 - 清单) / 清单 */

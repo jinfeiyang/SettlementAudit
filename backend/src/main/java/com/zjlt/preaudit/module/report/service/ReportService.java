@@ -22,6 +22,16 @@ import com.zjlt.preaudit.module.report.entity.Report;
 import com.zjlt.preaudit.module.report.mapper.ReportMapper;
 import com.zjlt.preaudit.module.task.entity.AsyncTask;
 import com.zjlt.preaudit.module.task.mapper.AsyncTaskMapper;
+import com.lowagie.text.Document;
+import com.lowagie.text.Element;
+import com.lowagie.text.Font;
+import com.lowagie.text.PageSize;
+import com.lowagie.text.Paragraph;
+import com.lowagie.text.Phrase;
+import com.lowagie.text.pdf.BaseFont;
+import com.lowagie.text.pdf.PdfPCell;
+import com.lowagie.text.pdf.PdfPTable;
+import com.lowagie.text.pdf.PdfWriter;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -94,16 +104,16 @@ public class ReportService {
         sections.add(ReportDtos.Section.text("二、预审依据与方法",
                 "1. 依据：现行通信工程预算定额、通信工程费用定额及配套取费标准（规则库版本由「规则库」模块维护并带生效时间）。\n"
                         + "2. 方法：工程量清单导入与标准化 → 定额套用三级核查（精确匹配 / 特征语义召回 / 换算系数校验）→ "
-                        + "取费基数与费率核查 → 疑点三级分级输出（高：确定性偏差；中：疑似需复核；低：提示性）。\n"
+                        + "取费基数与费率核查 → 疑点三级分级输出（高：证据完整且偏差大；中：偏差较小或证据待补强；低：信息不足仅作提示）。\n"
                         + "3. 说明：金额与结论均由确定性核算内核判定；AI 仅用于生成归因解释与文字建议，不修改金额、不下最终结论。"));
 
         sections.add(ReportDtos.Section.table("三、核查结果汇总", List.of("核查指标", "结果"),
                 List.of(
                         List.of("清单项数", String.valueOf(items.size())),
                         List.of("疑点合计", String.valueOf(stats.total())),
-                        List.of("高风险疑点（确定偏差）", String.valueOf(stats.high())),
-                        List.of("中风险疑点（需复核）", String.valueOf(stats.medium())),
-                        List.of("低风险疑点（提示性）", String.valueOf(stats.low())),
+                        List.of("高风险疑点", String.valueOf(stats.high())),
+                        List.of("中风险疑点", String.valueOf(stats.medium())),
+                        List.of("低风险疑点", String.valueOf(stats.low())),
                         List.of("定额前三命中率", percent(result.get("hitRate"))),
                         List.of("清单直接费合计（元）", money(result.get("directCost"))),
                         List.of("应计取费合计（元）", money(result.get("feeTotal"))),
@@ -283,6 +293,106 @@ public class ReportService {
         }
     }
 
+    /**
+     * 导出 PDF（D5）：与 Word 导出同一份结构化内容，只是换一种交付格式。
+     * 用内置 CJK 字体（STSong-Light）而非部署机字体，保证 Linux/Windows 上中文都不乱码。
+     */
+    public void exportPdf(Long id, HttpServletResponse response) {
+        Report report = requireReport(id);
+        Project project = projectMapper.selectById(report.getProjectId());
+        ReportDtos.ReportContent content = JsonUtil.fromJson(report.getContent(), ReportDtos.ReportContent.class);
+        List<ReportDtos.Section> sections = content == null || content.sections() == null
+                ? List.of() : content.sections();
+        String fileName = report.getTitle() + "-V" + report.getVersion() + ".pdf";
+        String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
+        response.setContentType("application/pdf");
+        response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + encoded);
+        try {
+            BaseFont cjk = BaseFont.createFont("STSong-Light", "UniGB-UCS2-H", BaseFont.NOT_EMBEDDED);
+            Font titleFont = new Font(cjk, 18, Font.BOLD);
+            Font metaFont = new Font(cjk, 9);
+            Font headingFont = new Font(cjk, 13, Font.BOLD);
+            Font bodyFont = new Font(cjk, 11);
+            Font tableFont = new Font(cjk, 9);
+
+            Document document = new Document(PageSize.A4, 48, 48, 48, 48);
+            PdfWriter.getInstance(document, response.getOutputStream());
+            document.open();
+            try {
+                Paragraph title = new Paragraph(nvl(report.getTitle()), titleFont);
+                title.setAlignment(Element.ALIGN_CENTER);
+                title.setSpacingAfter(8);
+                document.add(title);
+
+                Paragraph meta = new Paragraph(String.format("项目编号：%s    工程类型：%s    版本：V%d    生成时间：%s",
+                        project == null ? "" : nvl(project.getProjectNo()),
+                        project == null ? "" : Dict.engType(project.getEngType()),
+                        report.getVersion(),
+                        report.getUpdateTime() == null ? ""
+                                : report.getUpdateTime().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))), metaFont);
+                meta.setAlignment(Element.ALIGN_CENTER);
+                meta.setSpacingAfter(14);
+                document.add(meta);
+
+                for (ReportDtos.Section section : sections) {
+                    Paragraph heading = new Paragraph(nvl(section.title()), headingFont);
+                    heading.setSpacingBefore(12);
+                    heading.setSpacingAfter(6);
+                    document.add(heading);
+                    if ("table".equals(section.type()) && section.columns() != null) {
+                        writePdfTable(document, section, tableFont);
+                    } else {
+                        writePdfText(document, section.text(), bodyFont);
+                    }
+                }
+            } finally {
+                if (document.isOpen()) {
+                    document.close();
+                }
+            }
+
+            if (Dict.REPORT_CONFIRMED.equals(report.getStatus())) {
+                report.setStatus(Dict.REPORT_EXPORTED);
+                reportMapper.updateById(report);
+            }
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("报告 PDF 导出失败 id={}", id, e);
+            throw new BizException("报告 PDF 导出失败：" + e.getMessage());
+        }
+    }
+
+    private void writePdfTable(Document document, ReportDtos.Section section, Font font) {
+        List<String> columns = section.columns();
+        List<List<String>> rows = section.rows() == null ? List.of() : section.rows();
+        PdfPTable table = new PdfPTable(columns.size());
+        table.setWidthPercentage(100);
+        for (String column : columns) {
+            PdfPCell cell = new PdfPCell(new Phrase(nvl(column), font));
+            cell.setHorizontalAlignment(Element.ALIGN_CENTER);
+            cell.setVerticalAlignment(Element.ALIGN_MIDDLE);
+            table.addCell(cell);
+        }
+        for (List<String> row : rows) {
+            for (int c = 0; c < columns.size(); c++) {
+                PdfPCell cell = new PdfPCell(new Phrase(nvl(c < row.size() ? row.get(c) : ""), font));
+                cell.setVerticalAlignment(Element.ALIGN_MIDDLE);
+                table.addCell(cell);
+            }
+        }
+        document.add(table);
+    }
+
+    private void writePdfText(Document document, String text, Font font) {
+        for (String line : nvl(text).split("\\n")) {
+            Paragraph paragraph = new Paragraph(line, font);
+            paragraph.setFirstLineIndent(22);
+            paragraph.setSpacingAfter(4);
+            document.add(paragraph);
+        }
+    }
+
     private void writeTable(XWPFDocument doc, ReportDtos.Section section) {
         List<String> columns = section.columns();
         List<List<String>> rows = section.rows() == null ? List.of() : section.rows();
@@ -350,9 +460,9 @@ public class ReportService {
     private String adviceText(IssueDtos.IssueStats stats, Map<String, Object> result) {
         StringBuilder sb = new StringBuilder();
         sb.append("1. 高风险疑点 ").append(stats.high())
-                .append(" 条为确定性偏差（定额未匹配、工程量或合价异常、取费偏差过大），建议逐条核对清单原文、结算书与图纸后要求整改。\n");
+                .append(" 条：证据完整且偏差达到高风险阈值（数量/金额一致性错误、有价行未套定额、取费偏差超 15% 且可核算行占比≥80%、图纸数量偏差≥20%）。建议逐条核对清单原文、结算书与图纸后要求整改。\n");
         sb.append("2. 中风险疑点 ").append(stats.medium())
-                .append(" 条为疑似需复核项（语义召回定额、计量单位换算、取费偏差），建议结合项目特征与定额子目说明人工确认。\n");
+                .append(" 条：偏差较小或证据需补强（语义召回/单位换算命中、图纸无对应、取费基数含估算值、图纸数量偏差 5%~20%）。建议结合项目特征、图纸定位与定额说明人工确认。\n");
         sb.append("3. 定额前三命中率 ")
                 .append(percent(result.get("hitRate")))
                 .append("，低于 85% 时建议补充规则库定额子目与特征关键词，提升自动匹配质量。\n");

@@ -25,19 +25,32 @@
 
     <el-descriptions :column="4" border class="meta">
       <el-descriptions-item label="项目编号">{{ project?.projectNo || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="工程类型">{{ project?.engTypeName || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="项目经理">{{ project?.projectManager || '-' }}</el-descriptions-item>
       <el-descriptions-item label="地市">{{ project?.city || '-' }}</el-descriptions-item>
-      <el-descriptions-item label="状态">
-        <el-tag :type="statusTag(project?.status)" size="small">{{ project?.statusName }}</el-tag>
-      </el-descriptions-item>
+
+      <!-- 合同/订单编号较长，各占两列，避免被挤到看不全 -->
+      <el-descriptions-item label="合同编号" :span="2">{{ project?.contractNo || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="订单编号" :span="2">{{ project?.orderNo || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="施工单位" :span="2">{{ project?.builderUnit || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="监理单位" :span="2">{{ project?.supervisorUnit || '-' }}</el-descriptions-item>
+
+      <el-descriptions-item label="施工费（元）">{{ money(project?.constructionFee) }}</el-descriptions-item>
       <el-descriptions-item label="结算送审金额（元）">{{ money(overview?.settleAmount) }}</el-descriptions-item>
       <el-descriptions-item label="清单项数">{{ overview?.boqCount ?? 0 }}</el-descriptions-item>
       <el-descriptions-item label="清单合计（元）">{{ money(overview?.boqTotal) }}</el-descriptions-item>
+
+      <el-descriptions-item label="状态">
+        <el-tag :type="statusTag(project?.status)" size="small">{{ project?.statusName }}</el-tag>
+      </el-descriptions-item>
       <el-descriptions-item label="最近核查">{{ datetime(overview?.lastCheckTime) }}</el-descriptions-item>
+      <el-descriptions-item label="创建时间">{{ datetime(project?.createTime) }}</el-descriptions-item>
+      <el-descriptions-item label="备注">{{ project?.remark || '-' }}</el-descriptions-item>
     </el-descriptions>
 
     <el-tabs v-model="tab" class="tabs">
       <el-tab-pane label="核查概览" name="overview">
-        <OverviewPanel :overview="overview" @go="tab = $event" />
+        <OverviewPanel :overview="overview" @go="tab = $event" @issue-filter="onIssueFilter" />
       </el-tab-pane>
       <el-tab-pane :label="`资料与解析 (${overview?.fileCount ?? 0})`" name="files">
         <FilePanel :project-id="numberId" @changed="refreshOverview" @go="tab = $event" />
@@ -77,6 +90,7 @@
         <IssuePanel
           :project-id="numberId"
           :refresh-key="dataVersion"
+          :filter="issueFilter"
           @locate="onLocate"
           @changed="refreshOverview"
         />
@@ -118,6 +132,8 @@ const cableCount = ref(0)
 const drawingCount = ref(0)
 /** 核查/生成报告完成后自增，通知已挂载的 Tab 面板重新取数（Tab 不销毁，不会重新 onMounted） */
 const dataVersion = ref(0)
+/** 从核查概览跳转时带给「疑点复核」的筛选条件 */
+const issueFilter = ref<{ level?: number; reviewStatus?: string }>()
 
 const checking = ref(false)
 const progress = ref(0)
@@ -206,6 +222,12 @@ async function generateReport() {
 const drawingFocus = ref<{ key: string; seq: number }>()
 let drawingFocusSeq = 0
 
+function onIssueFilter(filter: { level?: number; reviewStatus?: string }) {
+  // 每次都换新对象：重复点同一张卡片也能重新带上条件取数
+  issueFilter.value = { ...filter }
+  tab.value = 'issues'
+}
+
 function onLocateDrawing(key: string) {
   // seq 自增，连续定位同一行时也要重新滚动/闪烁
   drawingFocus.value = { key, seq: ++drawingFocusSeq }
@@ -248,12 +270,37 @@ onBeforeUnmount(stopPoll)
 </script>
 
 <style scoped>
+/* 长项目名 + 多个操作按钮时不挤掉标题：按钮可整组换行，标题自身也允许折行 */
+:deep(.el-page-header__header) {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+:deep(.el-page-header__left) {
+  flex: 1 1 480px;
+  min-width: 0;
+  margin-right: 16px;
+}
+:deep(.el-page-header__content) {
+  min-width: 0;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-all;
+}
 .actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .meta {
   margin: 16px 0;
+}
+/* 合同/订单编号、单位名称较长时按字符折行，不再被截断 */
+.meta :deep(.el-descriptions__cell) {
+  word-break: break-all;
+}
+.meta :deep(.el-descriptions__label) {
+  min-width: 104px;
 }
 .tabs {
   background: #fff;

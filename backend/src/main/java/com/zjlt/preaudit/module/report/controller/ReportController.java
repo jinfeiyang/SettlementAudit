@@ -69,4 +69,10 @@ public class ReportController {
     public void export(@PathVariable Long id, HttpServletResponse response) {
         reportService.exportWord(id, response);
     }
+
+    @Operation(summary = "导出 PDF")
+    @GetMapping("/reports/{id}/export/pdf")
+    public void exportPdf(@PathVariable Long id, HttpServletResponse response) {
+        reportService.exportPdf(id, response);
+    }
 }

@@ -33,13 +33,14 @@
       <el-table-column label="确认时间" width="170">
         <template #default="{ row }">{{ datetime(row.confirmTime) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
+      <el-table-column label="操作" width="390" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="preview(row)">预览</el-button>
           <el-button link type="primary" :disabled="row.status !== 'DRAFT'" @click="openEdit(row)">
             编辑
           </el-button>
           <el-button link type="primary" @click="exportWord(row)">导出 Word</el-button>
+          <el-button link type="primary" @click="exportPdf(row)">导出 PDF</el-button>
           <el-button
             link
             type="success"
@@ -253,6 +254,10 @@ async function remove(row: ReportVO) {
 
 function exportWord(row: ReportVO) {
   reportApi.exportWord(row.id, row.title)
+}
+
+function exportPdf(row: ReportVO) {
+  reportApi.exportPdf(row.id, row.title)
 }
 
 async function loadSettings() {

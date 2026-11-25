@@ -15,9 +15,9 @@
       </el-form-item>
       <el-form-item label="级别">
         <el-select v-model="query.level" placeholder="全部" clearable style="width: 130px">
-          <el-option label="高（确定偏差）" :value="3" />
-          <el-option label="中（需复核）" :value="2" />
-          <el-option label="低（提示性）" :value="1" />
+          <el-option label="高" :value="3" />
+          <el-option label="中" :value="2" />
+          <el-option label="低" :value="1" />
         </el-select>
       </el-form-item>
       <el-form-item label="类型">

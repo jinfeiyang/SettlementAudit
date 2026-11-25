@@ -42,6 +42,40 @@ public final class TextUtil {
         return s.toLowerCase(Locale.ROOT).trim();
     }
 
+    /** 「光交」是「光缆交接箱」的口语简称；「光交换」不是，别误伤 */
+    private static final Pattern OPTICAL_JOINT_BOX_SHORT = Pattern.compile("光交(?!换)");
+    private static final Pattern OPTICAL_JOINT_BOX = Pattern.compile("交接箱");
+    /** ODF 的几种写法：ODF架 / ODF框 / ODF子架 / ODF子框，统一按「odf」比 */
+    private static final Pattern ODF_VARIANT = Pattern.compile("odf(?:子?[框架])?");
+    /** 「新建/新立/新设」是施工动作，不是材料名的一部分 */
+    private static final Pattern NEW_BUILD_PREFIX = Pattern.compile("^(?:新建|新立|新设|新购|新装)");
+
+    /**
+     * 材料的同物异名归一：简称/型号写法统一到规范名，供「图纸材料 ↔ 清单行」配对用。
+     *
+     * 竣工图材料表写的是图上叫法（新立光交、新建576芯光缆交接箱、ODF子框），清单写的是
+     * 规范名（光缆交接箱、ODF框），双字相似度算不出关系，必须先把同物异名收成同一个名字。
+     * 只用于名称配对，不参与定额语义匹配——那里的简称口径另有规则。
+     * 口径与 ai-service 的 canonical_material_name、前端 match.ts 保持一致（三处同步改）。
+     */
+    public static String canonicalName(String raw) {
+        String name = normalize(raw);
+        if (name.isBlank()) {
+            return "";
+        }
+        // 「光交底座砂浆抹面」与「光交砂浆抹面」是同一条清单项，中间那两个字是图上顺手写的
+        name = name.replace("底座砂浆抹面", "砂浆抹面").replace("底座", "基座");
+        if (!name.contains("光缆交接箱")) {
+            if (OPTICAL_JOINT_BOX_SHORT.matcher(name).find()) {
+                name = OPTICAL_JOINT_BOX_SHORT.matcher(name).replaceAll("光缆交接箱");
+            } else if (OPTICAL_JOINT_BOX.matcher(name).find()) {
+                name = OPTICAL_JOINT_BOX.matcher(name).replaceAll("光缆交接箱");
+            }
+        }
+        name = ODF_VARIANT.matcher(name).replaceAll("odf");
+        return NEW_BUILD_PREFIX.matcher(name).replaceAll("").trim();
+    }
+
     /** 单位归一化：平方米->m2，米->m，百米/千米保留（换算校验用） */
     public static String normalizeUnit(String unit) {
         String u = normalize(unit);

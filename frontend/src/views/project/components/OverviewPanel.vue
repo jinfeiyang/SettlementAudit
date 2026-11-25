@@ -3,23 +3,23 @@
     <el-row :gutter="16">
       <el-col :span="8">
         <el-card shadow="hover" class="metric">
-          <div class="label">高风险疑点（确定偏差）</div>
+          <div class="label">高风险疑点</div>
           <div class="value danger">{{ overview.issueHigh }}</div>
-          <el-button link type="primary" @click="$emit('go', 'issues')">查看疑点</el-button>
+          <el-button link type="primary" @click="$emit('issueFilter', { level: 3 })">查看疑点</el-button>
         </el-card>
       </el-col>
       <el-col :span="8">
         <el-card shadow="hover" class="metric">
-          <div class="label">中风险疑点（需复核）</div>
+          <div class="label">中风险疑点</div>
           <div class="value warning">{{ overview.issueMedium }}</div>
-          <el-button link type="primary" @click="$emit('go', 'issues')">查看疑点</el-button>
+          <el-button link type="primary" @click="$emit('issueFilter', { level: 2 })">查看疑点</el-button>
         </el-card>
       </el-col>
       <el-col :span="8">
         <el-card shadow="hover" class="metric">
-          <div class="label">低风险疑点（提示性）</div>
+          <div class="label">低风险疑点</div>
           <div class="value low">{{ overview.issueLow }}</div>
-          <el-button link type="primary" @click="$emit('go', 'issues')">查看疑点</el-button>
+          <el-button link type="primary" @click="$emit('issueFilter', { level: 1 })">查看疑点</el-button>
         </el-card>
       </el-col>
     </el-row>
@@ -35,10 +35,24 @@
     />
 
     <el-descriptions class="summary" :column="3" border>
-      <el-descriptions-item label="疑点合计">{{ overview.issueTotal }}</el-descriptions-item>
-      <el-descriptions-item label="待复核">{{ overview.issuePending }}</el-descriptions-item>
-      <el-descriptions-item label="已确认">{{ overview.issueConfirmed }}</el-descriptions-item>
-      <el-descriptions-item label="已驳回">{{ overview.issueRejected }}</el-descriptions-item>
+      <el-descriptions-item label="疑点合计">
+        <el-button link type="primary" @click="$emit('issueFilter', {})">{{ overview.issueTotal }}</el-button>
+      </el-descriptions-item>
+      <el-descriptions-item label="待复核">
+        <el-button link type="primary" @click="$emit('issueFilter', { reviewStatus: 'PENDING' })">
+          {{ overview.issuePending }}
+        </el-button>
+      </el-descriptions-item>
+      <el-descriptions-item label="已确认">
+        <el-button link type="primary" @click="$emit('issueFilter', { reviewStatus: 'CONFIRMED' })">
+          {{ overview.issueConfirmed }}
+        </el-button>
+      </el-descriptions-item>
+      <el-descriptions-item label="已驳回">
+        <el-button link type="primary" @click="$emit('issueFilter', { reviewStatus: 'REJECTED' })">
+          {{ overview.issueRejected }}
+        </el-button>
+      </el-descriptions-item>
       <el-descriptions-item label="清单项数">{{ overview.boqCount }}</el-descriptions-item>
       <el-descriptions-item label="最近核查">{{ datetime(overview.lastCheckTime) }}</el-descriptions-item>
     </el-descriptions>
@@ -50,7 +64,10 @@ import type { Overview } from '@/api'
 import { datetime } from '@/utils/format'
 
 defineProps<{ overview?: Overview }>()
-defineEmits<{ (e: 'go', tab: string): void }>()
+defineEmits<{
+  (e: 'go', tab: string): void
+  (e: 'issueFilter', filter: { level?: number; reviewStatus?: string }): void
+}>()
 </script>
 
 <style scoped>

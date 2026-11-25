@@ -2,9 +2,9 @@
   <div>
     <div class="toolbar">
       <el-select v-model="query.level" placeholder="全部级别" clearable style="width: 130px">
-        <el-option label="高（确定偏差）" :value="3" />
-        <el-option label="中（需复核）" :value="2" />
-        <el-option label="低（提示性）" :value="1" />
+        <el-option label="高" :value="3" />
+        <el-option label="中" :value="2" />
+        <el-option label="低" :value="1" />
       </el-select>
       <el-select v-model="query.issueType" placeholder="全部类型" clearable style="width: 140px">
         <el-option v-for="(label, value) in typeOptions" :key="value" :label="label" :value="value" />
@@ -157,7 +157,12 @@ import { levelTag, money } from '@/utils/format'
 import { useTableHeight } from '@/utils/useTableHeight'
 
 /** refreshKey 由父组件在核查完成后自增，用来触发列表重载（Tab 已挂载时不会重新 onMounted） */
-const props = defineProps<{ projectId: number; refreshKey?: number }>()
+const props = defineProps<{
+  projectId: number
+  refreshKey?: number
+  /** 从核查概览卡片跳转过来的筛选条件 */
+  filter?: { level?: number; reviewStatus?: string }
+}>()
 const emit = defineEmits<{ (e: 'locate', rowNo?: number): void; (e: 'changed'): void }>()
 
 const typeOptions: Record<string, string> = {
@@ -304,6 +309,19 @@ watch(() => props.refreshKey, () => {
   selection.value = []
   reload()
 })
+watch(() => props.filter, (filter) => {
+  if (!filter) {
+    return
+  }
+  // 概览点进来的条件就是本次的唯一口径，避免上一次手输的类型/关键词把结果过滤空
+  query.level = filter.level ?? undefined
+  query.reviewStatus = filter.reviewStatus ?? ''
+  query.issueType = ''
+  query.keyword = ''
+  query.page = 1
+  selection.value = []
+  reload()
+}, { immediate: true })
 </script>
 
 <style scoped>

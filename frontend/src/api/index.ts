@@ -379,6 +379,7 @@ export const reportApi = {
   confirm: (id: number) => request.post<ReportVO>(`/reports/${id}/confirm`),
   remove: (id: number) => request.delete<void>(`/reports/${id}`),
   exportWord: (id: number, name: string) => download(`/reports/${id}/export`, `${name}.docx`),
+  exportPdf: (id: number, name: string) => download(`/reports/${id}/export/pdf`, `${name}.pdf`),
 }
 
 export const ruleApi = {

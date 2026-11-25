@@ -31,6 +31,32 @@ export function normalizeText(raw?: string | null): string {
     .trim()
 }
 
+/**
+ * 材料的同物异名归一：简称/型号写法统一到规范名，供「图纸材料 ↔ 清单行」配对用。
+ *
+ * 竣工图材料表写的是图上叫法（新立光交、ODF子框），清单写的是规范名（光缆交接箱、ODF框），
+ * 双字切分算不出关系，必须先把同物异名收成同一个名字。口径与后端 TextUtil.canonicalName 一致。
+ */
+export function canonicalName(raw?: string | null): string {
+  let name = normalizeText(raw)
+  if (!name) {
+    return ''
+  }
+  // 「光交底座砂浆抹面」与「光交砂浆抹面」是同一条清单项，中间那两个字是图上顺手写的
+  name = name.replace(/底座砂浆抹面/g, '砂浆抹面').replace(/底座/g, '基座')
+  if (!name.includes('光缆交接箱')) {
+    // 「光交」是「光缆交接箱」的口语简称；「光交换」是另一种设备，不能误伤
+    if (/光交(?!换)/.test(name)) {
+      name = name.replace(/光交(?!换)/g, '光缆交接箱')
+    } else {
+      name = name.replace(/交接箱/g, '光缆交接箱')
+    }
+  }
+  name = name.replace(/odf(?:子?[框架])?/g, 'odf')
+  // 「新建/新立/新设」是施工动作，不是材料名的一部分
+  return name.replace(/^(?:新建|新立|新设|新购|新装)/, '').trim()
+}
+
 /** 单位归一化：平方米->m2，米->m，百米/千米保留（换算校验用） */
 export function normalizeUnit(unit?: string | null): string {
   const u = normalizeText(unit)
@@ -163,7 +189,8 @@ export function unitsIncompatible(a?: string | null, b?: string | null): boolean
 
 /** 型号里的关键参数：芯数、对数、端口、孔位、容量、截面、电压电流等 */
 const FEATURE_PATTERNS: { label: string; re: RegExp }[] = [
-  { label: '芯', re: /(\d+)\s*芯/g },
+  // 「288芯以上」是定额的范围写法，不是具体芯数，不能当成型号参数去比
+  { label: '芯', re: /(\d+)\s*芯(?!\s*[及以]?[上下])/g },
   { label: '对', re: /(\d+)\s*对/g },
   { label: '口', re: /(\d+)\s*(?:口|端口)/g },
   { label: '孔', re: /(\d+)\s*孔/g },
