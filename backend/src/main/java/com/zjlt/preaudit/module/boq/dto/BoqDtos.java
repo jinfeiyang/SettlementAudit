@@ -59,4 +59,18 @@ public final class BoqDtos {
                                  BigDecimal length, BigDecimal amount, String dedupKey,
                                  Integer dupGroup, String dupType) {
     }
+
+    /** 定位范围 */
+    public record BoundsVO(BigDecimal minX, BigDecimal minY, BigDecimal maxX, BigDecimal maxY) {
+    }
+
+    /** 施工光缆段与图纸页的人工关联 */
+    public record CableDrawingMatchVO(Long id, Long segmentId, Long fileId, Integer frame, BoundsVO bbox) {
+    }
+
+    /** 保存关联：一段可保存多条，传空列表表示清空该段的全部人工关联 */
+    public record CableDrawingMatchReq(Long segmentId, List<CableMatchItem> matches) {
+        public record CableMatchItem(Long fileId, Integer frame, BoundsVO bbox) {
+        }
+    }
 }

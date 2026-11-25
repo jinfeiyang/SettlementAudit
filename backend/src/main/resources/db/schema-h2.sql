@@ -146,6 +146,20 @@ CREATE TABLE IF NOT EXISTS boq_fixed_segment (
 CREATE INDEX IF NOT EXISTS idx_boq_fixed_project ON boq_fixed_segment(project_id, row_no);
 CREATE INDEX IF NOT EXISTS idx_boq_fixed_dedup ON boq_fixed_segment(project_id, dedup_key);
 
+-- 施工光缆段与图纸页的人工关联：一段可关联多页，一页一条记录
+CREATE TABLE IF NOT EXISTS cable_drawing_match (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  segment_id BIGINT NOT NULL,
+  file_id BIGINT NOT NULL,
+  frame INT,
+  bbox VARCHAR(500),
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_cable_match_project ON cable_drawing_match(project_id, segment_id);
+
 CREATE TABLE IF NOT EXISTS rule_quota (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   quota_code VARCHAR(64) NOT NULL,

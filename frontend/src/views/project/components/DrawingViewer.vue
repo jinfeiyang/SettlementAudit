@@ -22,6 +22,53 @@
         <el-option v-for="l in layers" :key="l.name" :label="l.displayName || l.name" :value="l.name" />
       </el-select>
       <el-button size="small" :disabled="mode !== 'dxf' || !viewerReady" @click="fitView">适应窗口</el-button>
+      <el-button
+        size="small"
+        :type="copyMode ? 'primary' : 'default'"
+        :loading="textLoading"
+        :disabled="mode !== 'dxf' || !viewerReady"
+        @click="toggleCopyMode"
+      >
+        {{ copyMode ? '退出复制模式' : '复制模式' }}
+      </el-button>
+      <div class="search-box">
+        <el-input
+          v-model="searchKeyword"
+          size="small"
+          placeholder="搜索图纸文字并定位"
+          clearable
+          :disabled="mode !== 'dxf' || !viewerReady"
+          @focus="onSearchFocus"
+          @click="onSearchFocus"
+          @blur="onSearchBlur"
+          @keyup.enter="onSearchEnter"
+        >
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <div v-if="searchOpen && searchKeyword" class="search-dropdown">
+          <div v-if="searchLoading" class="search-tip">文字加载中…</div>
+          <template v-else-if="searchGroups.length">
+            <div class="search-count">找到 {{ searchMatchCount }} 处，按图张分组</div>
+            <div v-for="group in searchGroups" :key="group.key" class="search-group">
+              <div class="search-group-head" @mousedown.prevent="focusSearchGroup(group)">
+                <span class="search-group-title">{{ group.title }}</span>
+                <span class="search-group-count">{{ group.count }} 处 {{ expandedGroup === group.key ? '▾' : '▸' }}</span>
+              </div>
+              <template v-if="expandedGroup === group.key">
+                <div
+                  v-for="item in group.hits"
+                  :key="item.key"
+                  class="search-item"
+                  @mousedown.prevent="focusSearchResult(item)"
+                >
+                  <span class="search-item-text">{{ item.before }}<b class="search-kw">{{ item.match }}</b>{{ item.after }}</span>
+                </div>
+              </template>
+            </div>
+          </template>
+          <div v-else class="search-tip">未找到匹配文字</div>
+        </div>
+      </div>
       <span class="meta">{{ fileSizeText }}</span>
     </div>
 
@@ -46,9 +93,39 @@
       v-loading="loading"
       element-loading-text="图纸转换与渲染中，首次打开需数秒…"
       class="stage-wrap"
-      :class="{ pickable: showPages && activePage === null && frames.length > 1 }"
+      :class="{
+        pickable: showPages && activePage === null && frames.length > 1,
+        'copy-mode': copyMode,
+      }"
     >
-      <div v-show="mode === 'dxf'" ref="stage" class="stage" />
+      <div
+        v-show="mode === 'dxf'"
+        ref="stage"
+        class="stage"
+        :class="{ 'hidden-in-copy': copyMode }"
+      />
+      <div v-if="copyMode" class="copy-view" @mousedown.stop @wheel.stop>
+        <div class="copy-filter">
+          <span class="copy-filter-label">图页筛选</span>
+          <el-select v-model="copyPageFilter" size="small" class="copy-filter-select">
+            <el-option label="全部图页" value="all" />
+            <el-option
+              v-for="group in allCopyGroups"
+              :key="group.key"
+              :label="group.title"
+              :value="group.key"
+            />
+          </el-select>
+          <span class="copy-filter-hint">共 {{ visibleCopyGroups.length }} 页文字</span>
+        </div>
+        <template v-if="visibleCopyGroups.length">
+          <section v-for="group in visibleCopyGroups" :key="group.key" class="copy-group">
+            <h4 class="copy-group-title">{{ group.title }}</h4>
+            <p v-for="(line, index) in group.lines" :key="index" class="copy-line">{{ line }}</p>
+          </section>
+        </template>
+        <el-empty v-else description="该图页没有可复制的文字" />
+      </div>
       <el-tooltip
         v-for="spot in hotspots"
         :key="spot.no"
@@ -63,6 +140,16 @@
           @click="focusPageByNo(spot.no)"
         />
       </el-tooltip>
+      <template v-if="!copyMode">
+        <div
+          v-for="marker in searchMarkers"
+          :key="marker.key"
+          class="search-marker"
+          :style="{ left: `${marker.x}px`, top: `${marker.y}px` }"
+        >
+          <span v-if="marker.showLabel" class="search-marker-label">{{ marker.text }}</span>
+        </div>
+      </template>
       <div v-if="mode === 'svg'" class="snapshot">
         <img v-if="svgUrl" :src="svgUrl" alt="图纸快照" />
       </div>
@@ -76,7 +163,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { DxfViewer, type LayerInfo } from 'dxf-viewer'
-import { projectApi } from '@/api'
+import { ElMessage } from 'element-plus'
+import { Search } from '@element-plus/icons-vue'
+import { projectApi, type DrawingTextLabel } from '@/api'
 import { highlightDxfText, type DxfBounds } from '@/utils/dxfHighlight'
 
 const props = defineProps<{
@@ -142,6 +231,326 @@ const layers = ref<LayerInfo[]>([])
 const hiddenLayers = ref<string[]>([])
 const svgUrl = ref('')
 const viewerReady = ref(false)
+
+/**
+ * 复制模式：WebGL 画布里的文字是像素，无法框选。切换后在原区域显示解析出的文字，
+ * 按图页分组、恢复阅读顺序，用普通 DOM 排版供鼠标框选复制；退出后回到图纸。
+ */
+const copyMode = ref(false)
+const textLoading = ref(false)
+const textLabels = ref<DrawingTextLabel[]>([])
+const copyPageFilter = ref('all')
+
+type CopyGroup = { key: string; title: string; lines: string[] }
+
+/** 按 y 聚成行、行内按 x 排序，尽量还原图纸上的阅读顺序 */
+function buildCopyLines(labels: DrawingTextLabel[], tolerance: number): string[] {
+  const rows: { y: number; items: DrawingTextLabel[] }[] = []
+  for (const label of [...labels].sort((a, b) => b.y - a.y || a.x - b.x)) {
+    const row = rows.find((item) => Math.abs(item.y - label.y) <= tolerance)
+    if (row) {
+      row.items.push(label)
+    } else {
+      rows.push({ y: label.y, items: [label] })
+    }
+  }
+  return rows.map((row) => row.items
+    .sort((a, b) => a.x - b.x)
+    .map((item) => item.text.trim())
+    .join('  '))
+}
+
+const allCopyGroups = computed<CopyGroup[]>(() => {
+  if (!textLabels.value.length) {
+    return []
+  }
+  const byFrame = new Map<number, DrawingTextLabel[]>()
+  const orphans: DrawingTextLabel[] = []
+  for (const label of textLabels.value) {
+    if (label.frame == null) {
+      orphans.push(label)
+      continue
+    }
+    const list = byFrame.get(label.frame) ?? []
+    list.push(label)
+    byFrame.set(label.frame, list)
+  }
+  const groups: CopyGroup[] = []
+  for (const [frameNo, list] of [...byFrame.entries()].sort((a, b) => a[0] - b[0])) {
+    const frame = frames.value.find((item) => item.no === frameNo)
+    const tolerance = frame && frame.maxY > frame.minY ? (frame.maxY - frame.minY) / 80 : 5
+    const sheet = list.find((item) => item.sheet)?.sheet
+    const title = list.find((item) => item.title)?.title
+    groups.push({
+      key: `frame-${frameNo}`,
+      title: `第 ${frameNo} 张${sheet ? ` · ${sheet}` : ''}${title ? ` · ${title}` : ''}`,
+      lines: buildCopyLines(list, tolerance),
+    })
+  }
+  if (orphans.length) {
+    groups.push({ key: 'orphans', title: '未归属图页的文字', lines: buildCopyLines(orphans, 5) })
+  }
+  return groups
+})
+
+/** 按选中的图页过滤，全部图页时不过滤 */
+const visibleCopyGroups = computed<CopyGroup[]>(() => {
+  if (copyPageFilter.value === 'all') {
+    return allCopyGroups.value
+  }
+  return allCopyGroups.value.filter((group) => group.key === copyPageFilter.value)
+})
+
+/** 文字数据供复制模式和搜索共用，首次需要时加载一次 */
+let textLabelsPromise: Promise<boolean> | null = null
+async function ensureTextLabels(): Promise<boolean> {
+  if (textLabels.value.length) {
+    return true
+  }
+  if (!textLabelsPromise) {
+    textLoading.value = true
+    textLabelsPromise = (async () => {
+      try {
+        const data = await projectApi.parseResult(props.fileId)
+        textLabels.value = ((data?.textLabels ?? []) as DrawingTextLabel[]).filter((item) => !!item.text?.trim())
+        return textLabels.value.length > 0
+      } catch {
+        return false
+      }
+    })()
+  }
+  try {
+    return await textLabelsPromise
+  } finally {
+    textLoading.value = false
+  }
+}
+
+async function toggleCopyMode() {
+  if (copyMode.value) {
+    copyMode.value = false
+    return
+  }
+  if (!await ensureTextLabels()) {
+    ElMessage.warning('该图纸还没有解析出文字，请先完成解析')
+    return
+  }
+  copyPageFilter.value = 'all'
+  copyMode.value = true
+  ElMessage.success('文字视图：框选需要的内容即可复制，退出后恢复图纸')
+}
+
+/** 文字搜索：输入关键词即列出命中文字及所在图页，点击定位到该处 */
+const searchKeyword = ref('')
+const searchOpen = ref(false)
+const searchLoading = ref(false)
+type SearchResult = {
+  key: string
+  label: DrawingTextLabel
+  before: string
+  match: string
+  after: string
+  page: string
+}
+type SearchGroup = { key: string; title: string; count: number; hits: SearchResult[] }
+const searchGroups = ref<SearchGroup[]>([])
+const searchMatchCount = ref(0)
+const expandedGroup = ref('')
+type SearchMarker = { key: string; x: number; y: number; text: string; showLabel: boolean }
+const searchMarkers = ref<SearchMarker[]>([])
+let activeSearchLabels: DrawingTextLabel[] = []
+let searchSeq = 0
+
+function pageTextOf(label: DrawingTextLabel): string {
+  if (label.frame == null) {
+    return '图框外'
+  }
+  return `第 ${label.frame} 张${label.sheet ? ` · ${label.sheet}` : ''}`
+}
+
+async function runSearch(keyword: string) {
+  const kw = keyword.trim().toLowerCase()
+  const seq = ++searchSeq
+  searchMatchCount.value = 0
+  searchMarkers.value = []
+  activeSearchLabels = []
+  expandedGroup.value = ''
+  if (!kw) {
+    searchGroups.value = []
+    return
+  }
+  if (!textLabels.value.length) {
+    searchLoading.value = true
+    const ok = await ensureTextLabels()
+    searchLoading.value = false
+    if (!ok || seq !== searchSeq) {
+      searchGroups.value = []
+      return
+    }
+  }
+  if (seq !== searchSeq) {
+    return
+  }
+  const groups = new Map<string, SearchGroup>()
+  let count = 0
+  for (const label of textLabels.value) {
+    const index = label.text.toLowerCase().indexOf(kw)
+    if (index < 0) {
+      continue
+    }
+    count += 1
+    const key = String(label.frame ?? 'out')
+    let group = groups.get(key)
+    if (!group) {
+      group = { key, title: pageTextOf(label), count: 0, hits: [] }
+      groups.set(key, group)
+    }
+    group.count += 1
+    // 单张图最多列 100 条，避免某个高频词把下拉撑爆
+    if (group.hits.length < 100) {
+      group.hits.push({
+        key: `${key}-${label.x}-${label.y}-${count}`,
+        label,
+        before: label.text.slice(0, index),
+        match: label.text.slice(index, index + keyword.trim().length),
+        after: label.text.slice(index + keyword.trim().length),
+        page: pageTextOf(label),
+      })
+    }
+  }
+  searchMatchCount.value = count
+  searchGroups.value = [...groups.values()].sort((a, b) => {
+    if (a.key === 'out') return 1
+    if (b.key === 'out') return -1
+    return Number(a.key) - Number(b.key)
+  })
+}
+
+let searchBlurTimer: number | undefined
+function onSearchFocus() {
+  if (searchBlurTimer !== undefined) {
+    window.clearTimeout(searchBlurTimer)
+    searchBlurTimer = undefined
+  }
+  searchOpen.value = true
+  if (searchKeyword.value) {
+    void runSearch(searchKeyword.value)
+  }
+}
+function onSearchBlur() {
+  // 延迟关闭，让结果项的 mousedown 先处理；重新聚焦时上面的 focus 会取消该定时器
+  if (searchBlurTimer !== undefined) {
+    window.clearTimeout(searchBlurTimer)
+  }
+  searchBlurTimer = window.setTimeout(() => {
+    searchOpen.value = false
+    searchBlurTimer = undefined
+  }, 150)
+}
+function onSearchEnter() {
+  if (searchGroups.value.length) {
+    focusSearchGroup(searchGroups.value[0])
+  }
+}
+
+watch(searchKeyword, (value) => {
+  void runSearch(value)
+})
+
+/** 画布上按文字坐标重算所有标记位置 */
+function updateSearchMarkers() {
+  if (!activeSearchLabels.length || !viewer) {
+    searchMarkers.value = []
+    return
+  }
+  // FitView 触发的 viewChanged 发生在 Render 之前，此时相机矩阵还是旧的；
+  // 投影前强制更新，否则标记会整体偏移。
+  viewer.GetCamera().updateMatrixWorld()
+  const origin = viewer.GetOrigin()
+  const ox = origin?.x ?? 0
+  const oy = origin?.y ?? 0
+  searchMarkers.value = activeSearchLabels.map((label) => {
+    const point = viewer!.SceneToCanvasCoord(label.x - ox, label.y - oy)
+    return { key: `${label.frame ?? 'out'}-${label.x}-${label.y}`, x: point.x, y: point.y,
+      text: label.text, showLabel: false }
+  })
+}
+
+/** 点图张：定位到该页、展开该页全部命中，并在画布上标出这些文字 */
+function focusSearchGroup(group: SearchGroup) {
+  const label = group.hits[0]?.label
+  if (!label) {
+    return
+  }
+  expandedGroup.value = expandedGroup.value === group.key ? '' : group.key
+  if (!expandedGroup.value) {
+    activeSearchLabels = []
+    searchMarkers.value = []
+    return
+  }
+  if (copyMode.value) {
+    copyMode.value = false
+  }
+  const frame = label.frame != null ? frames.value.find((f) => f.no === label.frame) : null
+  if (frame) {
+    fitBox(frame, 0.03)
+  } else {
+    // 图框外文字：按这一组命中的坐标范围定位
+    const xs = group.hits.map((h) => h.label.x)
+    const ys = group.hits.map((h) => h.label.y)
+    const bounds = viewer?.GetBounds()
+    const spanX = Math.max(...xs) - Math.min(...xs)
+    const spanY = Math.max(...ys) - Math.min(...ys)
+    const span = Math.max(spanX, spanY, bounds ? (bounds.maxX - bounds.minX) / 100 : 1000)
+    const cx = (Math.max(...xs) + Math.min(...xs)) / 2
+    const cy = (Math.max(...ys) + Math.min(...ys)) / 2
+    const ox = viewer?.GetOrigin()?.x ?? 0
+    const oy = viewer?.GetOrigin()?.y ?? 0
+    viewer?.FitView(cx - ox - span, cx - ox + span, cy - oy - span, cy - oy + span, 0.1)
+    viewer?.Render()
+  }
+  activePage.value = label.frame
+  emit('page-change', label.frame)
+  updateHotspots()
+  activeSearchLabels = group.hits.map((h) => h.label)
+  searchMarkers.value = []
+  nextTick(updateSearchMarkers)
+}
+
+/** 点具体命中：定位并放大到该文字，只标记这一处 */
+function focusSearchResult(item: SearchResult) {
+  searchOpen.value = false
+  if (copyMode.value) {
+    copyMode.value = false
+  }
+  const label = item.label
+  const frame = label.frame != null ? frames.value.find((f) => f.no === label.frame) : null
+  const bounds = viewer?.GetBounds()
+  const span = frame
+    ? Math.max((frame.maxX - frame.minX) / 12, (frame.maxY - frame.minY) / 12)
+    : bounds
+      ? Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) / 60
+      : 1000
+  const target = viewer
+  if (target) {
+    const origin = target.GetOrigin()
+    const ox = origin?.x ?? 0
+    const oy = origin?.y ?? 0
+    target.FitView(label.x - ox - span, label.x - ox + span, label.y - oy - span, label.y - oy + span, 0.1)
+    target.Render()
+  }
+  activePage.value = label.frame
+  emit('page-change', label.frame)
+  updateHotspots()
+  activeSearchLabels = [label]
+  searchMarkers.value = []
+  nextTick(() => {
+    updateSearchMarkers()
+    if (searchMarkers.value[0]) {
+      searchMarkers.value[0].showLabel = true
+    }
+  })
+}
 
 let viewer: DxfViewer | null = null
 let dxfUrl = ''
@@ -231,8 +640,8 @@ async function init() {
       colorCorrection: true,
     })
     await viewer.Load({ url: dxfUrl, fonts: [FONT_URL] })
-    viewer.Subscribe('viewChanged', updateHotspots)
-    viewer.Subscribe('resized', updateHotspots)
+    viewer.Subscribe('viewChanged', onViewChanged)
+    viewer.Subscribe('resized', onViewChanged)
     viewerReady.value = true
     layers.value = [...viewer.GetLayers(false)]
     // 预览容器（对话框）展开到最终尺寸后再定位，否则缩放会按小画布计算
@@ -311,11 +720,17 @@ async function loadFrames() {
 type Hotspot = { no: number; label: string; left: number; top: number; width: number; height: number }
 const hotspots = ref<Hotspot[]>([])
 
+function onViewChanged() {
+  updateHotspots()
+  updateSearchMarkers()
+}
+
 function updateHotspots() {
   if (!viewer || !props.showPages || activePage.value !== null || frames.value.length < 2) {
     hotspots.value = []
     return
   }
+  viewer.GetCamera().updateMatrixWorld()
   const origin = viewer.GetOrigin()
   const ox = origin?.x ?? 0
   const oy = origin?.y ?? 0
@@ -474,6 +889,110 @@ onBeforeUnmount(cleanup)
 .layer-select {
   width: 240px;
 }
+.search-box {
+  position: relative;
+  width: 220px;
+}
+.search-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 320px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+}
+.search-count,
+.search-tip {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #909399;
+}
+.search-group + .search-group {
+  border-top: 1px solid #f5f7fa;
+}
+.search-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  background: #fafbfc;
+}
+.search-group-head:hover {
+  background: #f0f7ff;
+}
+.search-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-group-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #909399;
+}
+.search-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  border-top: 1px solid #f5f7fa;
+}
+.search-item:hover {
+  background: #f5f7fa;
+}
+.search-item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #303133;
+}
+.search-kw {
+  color: #f56c6c;
+}
+.search-item-page {
+  flex-shrink: 0;
+  color: #909399;
+}
+.search-marker {
+  position: absolute;
+  z-index: 5;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid #f56c6c;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(245, 108, 108, 0.25);
+  pointer-events: none;
+}
+.search-marker-label {
+  position: absolute;
+  left: 12px;
+  top: -8px;
+  max-width: 220px;
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: #fff;
+  background: #f56c6c;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .page-bar {
   display: flex;
   flex-wrap: wrap;
@@ -503,6 +1022,64 @@ onBeforeUnmount(cleanup)
   color: #909399;
   font-size: 12px;
   margin-left: auto;
+}
+/* 复制模式：用普通排版的可选文字视图替换画布，保证不重叠、可框选 */
+.stage.hidden-in-copy {
+  visibility: hidden;
+}
+.copy-view {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  background: #fff;
+  overflow: auto;
+  padding: 12px 18px;
+  cursor: text;
+  user-select: text;
+}
+.copy-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #ebeef5;
+  user-select: none;
+}
+.copy-filter-label {
+  font-size: 13px;
+  color: #606266;
+  flex-shrink: 0;
+}
+.copy-filter-select {
+  width: 240px;
+}
+.copy-filter-hint {
+  font-size: 12px;
+  color: #909399;
+}
+.copy-group + .copy-group {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid #ebeef5;
+}
+.copy-group-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.copy-line {
+  margin: 0;
+  min-height: 20px;
+  font-size: 13px;
+  line-height: 20px;
+  color: #111;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.stage-wrap.copy-mode .page-hotspot {
+  pointer-events: none;
 }
 .stage-wrap.pickable {
   cursor: zoom-in;

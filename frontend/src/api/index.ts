@@ -15,6 +15,12 @@ export interface UserVO {
   roleName: string
 }
 
+export interface SysUserVO extends UserVO {
+  status: number
+  statusName: string
+  createTime?: string
+}
+
 export interface ProjectVO {
   id: number
   projectNo: string
@@ -127,6 +133,15 @@ export interface FixedSegmentVO {
   dupType?: string
 }
 
+/** 施工光缆段与图纸页的人工关联 */
+export interface CableDrawingMatchVO {
+  id: number
+  segmentId: number
+  fileId: number
+  frame: number | null
+  bbox?: { minX: number; minY: number; maxX: number; maxY: number } | null
+}
+
 /** 手工匹配结论：MATCH 指定图纸材料 / UNMATCH 取消匹配 */
 export interface MatchOverrideVO {
   boqItemId: number
@@ -237,6 +252,18 @@ export const authApi = {
   me: () => request.get<UserVO>('/auth/me'),
 }
 
+export const userApi = {
+  page: (params: { page: number; size: number; keyword?: string }) =>
+    request.get<PageResult<SysUserVO>>('/users', { params }),
+  create: (data: { username: string; password: string; realName?: string; roleCode: string }) =>
+    request.post<SysUserVO>('/users', data),
+  update: (id: number, data: { realName?: string; roleCode?: string; status?: number }) =>
+    request.put<SysUserVO>(`/users/${id}`, data),
+  resetPassword: (id: number, password: string) =>
+    request.put<void>(`/users/${id}/password`, { password }),
+  remove: (id: number) => request.delete<void>(`/users/${id}`),
+}
+
 export const projectApi = {
   page: (params: Record<string, unknown>) => request.get<PageResult<ProjectVO>>('/projects', { params }),
   create: (data: Record<string, unknown>) => request.post<ProjectVO>('/projects', data),
@@ -293,6 +320,15 @@ export const boqApi = {
   /** 表七光缆施工基准价逐段明细（含重复段标记） */
   fixedSegments: (projectId: number) =>
     request.get<FixedSegmentVO[]>(`/projects/${projectId}/boq/fixed-segments`),
+  /** 施工光缆段的人工图纸关联（全项目） */
+  cableDrawingMatches: (projectId: number) =>
+    request.get<CableDrawingMatchVO[]>(`/projects/${projectId}/boq/cable-drawing-matches`),
+  /** 保存光缆段的图纸关联：整段覆盖，matches 为空表示清空 */
+  saveCableDrawingMatches: (
+    projectId: number,
+    segmentId: number,
+    matches: Array<{ fileId: number; frame: number | null; bbox?: CableDrawingMatchVO['bbox'] }>,
+  ) => request.post<void>(`/projects/${projectId}/boq/cable-drawing-matches`, { segmentId, matches }),
   /** 清单行的人工图纸匹配结论 */
   drawingMatches: (projectId: number) =>
     request.get<MatchOverrideVO[]>(`/projects/${projectId}/boq/drawing-matches`),

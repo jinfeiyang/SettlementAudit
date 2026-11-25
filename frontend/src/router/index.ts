@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import BasicLayout from '@/layouts/BasicLayout.vue'
-import { TOKEN_KEY } from '@/api/request'
+import { TOKEN_KEY, USER_KEY } from '@/api/request'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -52,6 +52,12 @@ const router = createRouter({
           component: () => import('@/views/rule/RuleLibraryView.vue'),
           meta: { title: '规则库', icon: 'Collection' },
         },
+        {
+          path: 'users',
+          name: 'Users',
+          component: () => import('@/views/system/UserManageView.vue'),
+          meta: { title: '用户管理', icon: 'User', managerOnly: true },
+        },
       ],
     },
   ],
@@ -64,6 +70,17 @@ router.beforeEach((to) => {
   }
   if (to.path === '/login' && token) {
     return { path: '/dashboard' }
+  }
+  if (to.meta.managerOnly) {
+    let role = ''
+    try {
+      role = (JSON.parse(localStorage.getItem(USER_KEY) || '{}').roleCode as string) || ''
+    } catch {
+      role = ''
+    }
+    if (role !== 'MANAGER') {
+      return { path: '/dashboard' }
+    }
   }
   return true
 })

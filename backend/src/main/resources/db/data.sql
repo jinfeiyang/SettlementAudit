@@ -1,9 +1,10 @@
 -- 初始化种子数据（演示用，正式定额/取费数据由 A3 规则库导入任务灌入）
 USE cost_preaudit;
 
--- 默认用户：admin/造价人员 + manager/项目经理（骨架占位，接入 4A 后替换）
+-- 默认用户：admin/系统管理员 + manager/项目经理（骨架占位，接入 4A 后替换）
+-- 管理员按项目经理权限开通，才能使用用户管理等管理功能
 INSERT INTO sys_user (username, real_name, role_code)
-SELECT 'admin', '系统管理员', 'AUDITOR' FROM DUAL
+SELECT 'admin', '系统管理员', 'MANAGER' FROM DUAL
 WHERE NOT EXISTS (SELECT 1 FROM sys_user WHERE username = 'admin');
 INSERT INTO sys_user (username, real_name, role_code)
 SELECT 'manager', '项目经理', 'MANAGER' FROM DUAL

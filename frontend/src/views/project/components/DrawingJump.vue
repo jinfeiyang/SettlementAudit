@@ -1,7 +1,7 @@
 <template>
   <span class="drawing-jump">
     <template v-if="sources.length">
-      <el-button link type="primary" size="small" @click="open(sources[0])">
+      <el-button link type="primary" size="small" @click="openForView(sources[0])">
         {{ sourceLabel(sources[0]) }}
       </el-button>
       <el-popover
@@ -15,7 +15,7 @@
           <el-button link size="small">等 {{ sources.length }} 页</el-button>
         </template>
         <div v-for="src in sources" :key="`${src.fileId}-${src.frame}`" class="src-row">
-          <el-button link type="primary" size="small" @click="open(src)">
+          <el-button link type="primary" size="small" @click="openForView(src)">
             {{ sourceLabel(src) }}
           </el-button>
           <span class="src-file">{{ src.title || src.fileName }}</span>
@@ -82,6 +82,20 @@
           <el-button size="small" :type="overview ? 'primary' : 'default'" @click="showWhole">
             全图
           </el-button>
+          <template v-if="matchMode">
+            <el-button
+              size="small"
+              :type="currentPageMatched ? 'danger' : 'success'"
+              :plain="currentPageMatched"
+              :disabled="!matchTarget"
+              @click="toggleMatchCurrentPage"
+            >
+              {{ currentPageMatched ? '取消关联此页' : '关联此页' }}
+            </el-button>
+            <span class="match-hint">
+              {{ matchTarget ? `${matchTarget.label} · ${matchTargetDesc}` : '请先定位到某一页' }}
+            </span>
+          </template>
           <template v-if="relatedSources.length > 1">
             <span class="related-label">关联图纸（共 {{ relatedSources.length }} 页）</span>
             <el-button
@@ -159,6 +173,8 @@ const props = withDefaults(
     formulaData?: QuantityFormulaData | null
     /** 材料标识，传了才允许修改分项数值 */
     materialKey?: string
+    /** 已关联的图页（人工关联，或未人工时按自动命中），用于回显状态 */
+    matchedPages?: Array<{ fileId: number; frame: number | null }>
   }>(),
   {
     sources: () => [],
@@ -171,10 +187,14 @@ const props = withDefaults(
     formula: '',
     formulaData: null,
     materialKey: '',
+    matchedPages: () => [],
   },
 )
 
-const emit = defineEmits<{ (event: 'fix-saved'): void }>()
+const emit = defineEmits<{
+  (event: 'fix-saved'): void
+  (event: 'toggle-match', payload: { fileId: number; frame: number | null }): void
+}>()
 
 const editing = ref(false)
 const editValues = ref<Record<string, string>>({})
@@ -268,11 +288,23 @@ const highlightBounds = computed(() =>
     .filter((box): box is Bounds => box != null),
 )
 
+/** 打开预览时目标页；查看器加载中补发的空页码不能把它清掉，否则「已关联」会被误判 */
+let openedPage: number | null = null
+
 function showWhole() {
+  openedPage = null
   viewerRef.value?.showWhole()
 }
 
 function onPageChange(page: number | null) {
+  if (page === null && openedPage !== null) {
+    // 刚打开定位到某页时，忽略查看器初始化阶段补发的空页码
+    activePage.value = openedPage
+    return
+  }
+  if (page !== null) {
+    openedPage = page
+  }
   activePage.value = page
 }
 
@@ -319,6 +351,12 @@ function sourceLabel(source: DrawingSource) {
   return '材料表'
 }
 
+/** 查看入口：从关联图纸列点页码，只查看，不带关联/取消按钮 */
+function openForView(source: DrawingSource) {
+  matchMode.value = false
+  open(source)
+}
+
 function open(source: DrawingSource) {
   // 同一文件内切换图页不重建查看器，由查看器监听 focus 直接定位，避免重复解析 DXF
   if (file.value?.id !== source.fileId) {
@@ -329,7 +367,10 @@ function open(source: DrawingSource) {
   // 从全图/别的页切回这一页时引用没变，查看器就不会重新定位
   const box = focusBoundsOf(source)
   focus.value = box ? { ...box } : null
-  activePage.value = focus.value ? (source.frame ?? null) : null
+  // 页号按关联页直接设置：即便没有定位范围（图框外文字/整文件关联），
+  // 也要能正确回显「已关联」状态，否则会被误判成未关联而显示「关联此页」。
+  openedPage = source.frame ?? null
+  activePage.value = openedPage
   visible.value = true
 }
 
@@ -340,9 +381,57 @@ function openFile() {
   file.value = { id: props.fallback.fileId, fileName: props.fallback.fileName }
   current.value = null
   focus.value = null
+  openedPage = null
   activePage.value = null
   visible.value = true
 }
+
+/** 是否在关联模式：只有从操作列「关联」入口进入时才显示关联/取消按钮 */
+const matchMode = ref(false)
+
+/** 关联模式下当前预览的是哪一页；全图概览时返回 null，不允许关联 */
+const matchTarget = computed(() => {
+  if (!file.value || activePage.value === null) {
+    return null
+  }
+  return { fileId: file.value.id, frame: activePage.value, label: `第 ${activePage.value} 张` }
+})
+
+const matchTargetDesc = computed(() =>
+  current.value?.title ? current.value.title : file.value?.fileName ?? '',
+)
+
+/** 当前预览页是否已被人工关联 */
+const currentPageMatched = computed(() => {
+  const target = matchTarget.value
+  if (!target) {
+    return false
+  }
+  return props.matchedPages.some(
+    (page) => page.fileId === target.fileId && page.frame === target.frame,
+  )
+})
+
+function toggleMatchCurrentPage() {
+  const target = matchTarget.value
+  if (!target) {
+    return
+  }
+  emit('toggle-match', { fileId: target.fileId, frame: target.frame })
+}
+
+/** 关联入口：从操作列进入时开启关联模式，先定位到该段已关联/首个命中页 */
+function openForMatch() {
+  matchMode.value = true
+  if (props.sources.length) {
+    open(props.sources[0])
+    return
+  }
+  openFile()
+}
+
+/** 供外部「操作」列调用，触发关联预览 */
+defineExpose({ openForMatch })
 </script>
 
 <style scoped>
@@ -423,6 +512,10 @@ function openFile() {
   color: #606266;
   font-size: 12px;
   margin-right: 2px;
+}
+.match-hint {
+  color: #909399;
+  font-size: 12px;
 }
 .drawing-jump {
   display: inline-flex;

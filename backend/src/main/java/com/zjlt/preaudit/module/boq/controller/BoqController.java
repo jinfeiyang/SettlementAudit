@@ -56,6 +56,20 @@ public class BoqController {
         return R.ok(boqService.listFixedSegments(projectId));
     }
 
+    @Operation(summary = "表七光缆段的人工图纸关联（全项目）")
+    @GetMapping("/cable-drawing-matches")
+    public R<List<BoqDtos.CableDrawingMatchVO>> cableDrawingMatches(@PathVariable Long projectId) {
+        return R.ok(boqService.listCableDrawingMatches(projectId));
+    }
+
+    @Operation(summary = "保存表七光缆段的图纸关联（整段覆盖，空列表清空）")
+    @PostMapping("/cable-drawing-matches")
+    public R<Void> saveCableDrawingMatches(@PathVariable Long projectId,
+                                           @RequestBody BoqDtos.CableDrawingMatchReq req) {
+        boqService.saveCableDrawingMatches(projectId, req);
+        return R.ok();
+    }
+
     @Operation(summary = "清单行的人工图纸匹配结论")
     @GetMapping("/drawing-matches")
     public R<List<BoqDtos.MatchOverrideVO>> drawingMatches(@PathVariable Long projectId) {

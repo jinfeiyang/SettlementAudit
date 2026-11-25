@@ -93,18 +93,35 @@
       <el-table-column label="金额(元)" width="130" align="right" class-name="num-cell">
         <template #default="{ row }">{{ money(row.amount) }}</template>
       </el-table-column>
-      <el-table-column label="关联图纸" width="110">
+      <el-table-column label="关联图纸" width="130">
         <template #default="{ row }">
           <DrawingJump
-            v-if="hitsOf(row).length"
+            :ref="(el: unknown) => setJumpRef(row.id, el)"
             :sources="hitsOf(row).map((hit) => hit.source)"
+            :fallback="defaultDrawing"
+            :matched-pages="matchedPagesOf(row)"
             :material="highlightOf(row).highlight"
             :spec="highlightOf(row).spec"
             :highlight="highlightOf(row).highlight"
             :highlight-spec="highlightOf(row).spec"
             :highlight-fallback="highlightOf(row).fallback"
+            @toggle-match="(payload) => onToggleMatch(row, payload)"
           />
-          <span v-else class="muted" :title="drawingHint">未关联</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="120" align="center">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" @click="openMatch(row)">
+            {{ hasManualMatch(row) ? '调整' : '关联' }}
+          </el-button>
+          <el-tag v-if="hasManualMatch(row)" size="small" type="warning" effect="plain" class="manual-tag">手动</el-tag>
+          <el-button
+            v-if="hasManualMatch(row)"
+            link
+            size="small"
+            class="restore-btn"
+            @click="restoreAuto(row)"
+          >恢复自动</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -164,11 +181,20 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { boqApi, projectApi, type BoqItemVO, type DrawingTextLabel, type FileVO, type FixedSegmentVO } from '@/api'
+import { ElMessage } from 'element-plus'
+import {
+  boqApi,
+  projectApi,
+  type BoqItemVO,
+  type CableDrawingMatchVO,
+  type DrawingTextLabel,
+  type FileVO,
+  type FixedSegmentVO,
+} from '@/api'
 import { money } from '@/utils/format'
 import { useTableHeight } from '@/utils/useTableHeight'
 import DrawingJump from './DrawingJump.vue'
-import { findSegmentDrawingHits, type DrawingLabelDoc } from './drawingCompare'
+import { findSegmentDrawingHits, type DrawingLabelDoc, type DrawingSource, type SegmentDrawingHit } from './drawingCompare'
 
 /** refreshKey 由父组件在清单重新导入/核查完成后自增，Tab 不销毁也能重新取数 */
 const props = defineProps<{ projectId: number; refreshKey?: number }>()
@@ -184,6 +210,8 @@ const segments = ref<FixedSegmentVO[]>([])
 const boqItems = ref<BoqItemVO[]>([])
 /** 本项目已解析图纸的文字标注索引，用于按段名回查图纸页 */
 const labelDocs = ref<DrawingLabelDoc[]>([])
+/** 施工光缆段的人工图纸关联（后端持久化） */
+const manualMatches = ref<CableDrawingMatchVO[]>([])
 const loading = ref(false)
 const keyword = ref('')
 const coreFilter = ref<number | undefined>(undefined)
@@ -394,9 +422,46 @@ function qty(value?: number | null) {
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 }
 
-/** 段名在图纸标注里命中的页；同一段名+规格共用一份结果 */
+/** 该段的人工图纸关联 */
+function manualMatchOf(row: FixedSegmentVO): CableDrawingMatchVO[] {
+  return manualMatches.value.filter((m) => m.segmentId === row.id)
+}
+
+/** 没有自动命中时，「关联」按钮默认打开的图纸（第一张已解析图纸） */
+const defaultDrawing = computed(
+  () => labelDocs.value[0] && { fileId: labelDocs.value[0].fileId, fileName: labelDocs.value[0].fileName },
+)
+
+/** 把一条人工关联转成可直接交给 DrawingJump 的命中项 */
+function manualHit(match: CableDrawingMatchVO): SegmentDrawingHit {
+  const doc = labelDocs.value.find((d) => d.fileId === match.fileId)
+  const frame = match.frame != null ? doc?.frames?.find((f) => f.no === match.frame) : null
+  const source: DrawingSource = {
+    fileId: match.fileId,
+    fileName: doc?.fileName ?? `图纸 ${match.fileId}`,
+    frame: match.frame,
+    sheet: frame?.sheet ?? null,
+    title: frame?.title ?? null,
+    bbox: match.bbox
+      ? { minX: Number(match.bbox.minX), minY: Number(match.bbox.minY),
+          maxX: Number(match.bbox.maxX), maxY: Number(match.bbox.maxY) }
+      : frame
+        ? { minX: frame.minX, minY: frame.minY, maxX: frame.maxX, maxY: frame.maxY }
+        : null,
+    tableBox: null,
+    tables: [],
+  }
+  return { source, matched: [] }
+}
+
+/** 段名在图纸标注里命中的页；已人工干预时以人工结果为准（含清空），否则按段名+规格自动匹配 */
 const hitCache = new Map<string, ReturnType<typeof findSegmentDrawingHits>>()
 function hitsOf(row: FixedSegmentVO) {
+  if (hasManualMatch(row)) {
+    return manualMatchOf(row)
+      .filter((m) => m.frame !== MANUAL_EMPTY_FRAME)
+      .map(manualHit)
+  }
   const name = row.segmentName ?? ''
   const spec = highlightOf(row).spec
   const cacheKey = `${name}|${spec}`
@@ -409,9 +474,99 @@ function hitsOf(row: FixedSegmentVO) {
   return hits
 }
 
-const drawingHint = computed(() =>
-  labelDocs.value.length ? '图纸标注未找到该段名' : '暂无已解析图纸，或图纸未重新解析出文字标注',
-)
+/** 人工确认「不关联任何图纸」的哨兵图页号，需与后端 BoqService.MANUAL_EMPTY_FRAME 一致 */
+const MANUAL_EMPTY_FRAME = -1
+
+/** 该段是否已被人工干预（含人工清空哨兵） */
+function hasManualMatch(row: FixedSegmentVO) {
+  return manualMatches.value.some((m) => m.segmentId === row.id)
+}
+
+/**
+ * 当前生效的关联页：有人工干预就用人工结果（可能是空的），否则用自动命中。
+ * 自动命中同样算「已关联」。
+ */
+function effectiveMatchPages(row: FixedSegmentVO): Array<{ fileId: number; frame: number | null }> {
+  if (hasManualMatch(row)) {
+    return manualMatchOf(row)
+      .filter((m) => m.frame !== MANUAL_EMPTY_FRAME)
+      .map((m) => ({ fileId: m.fileId, frame: m.frame }))
+  }
+  return hitsOf(row).map((hit) => ({ fileId: hit.source.fileId, frame: hit.source.frame }))
+}
+
+/** 传给预览的已关联页，用于回显「已关联此页 / 未关联」 */
+function matchedPagesOf(row: FixedSegmentVO) {
+  return effectiveMatchPages(row)
+}
+
+/** 每行的图纸预览组件，供「操作」列的关联按钮打开对应预览 */
+const jumpRefs = new Map<number, { openForMatch: () => void }>()
+function setJumpRef(id: number, el: unknown) {
+  if (el) {
+    jumpRefs.set(id, el as { openForMatch: () => void })
+  } else {
+    jumpRefs.delete(id)
+  }
+}
+
+/** 操作列「关联」：打开该行的图纸预览，在预览里点「关联此页」完成关联 */
+function openMatch(row: FixedSegmentVO) {
+  jumpRefs.get(row.id)?.openForMatch()
+}
+
+/** 图纸预览里点「关联此页 / 取消关联此页」时增量保存该段人工关联 */
+function pageMatchedKey(fileId: number, frame: number | null) {
+  return `${fileId}::${frame ?? 'out'}`
+}
+
+async function onToggleMatch(
+  row: FixedSegmentVO,
+  payload: { fileId: number; frame: number | null },
+) {
+  const key = pageMatchedKey(payload.fileId, payload.frame)
+  // 基线取「当前生效的关联页」：首次操作会把自动命中的页一并固化下来，
+  // 之后取消其中某一页才能真正生效（否则自动命中会把它又加回来）。
+  const baseline = effectiveMatchPages(row)
+  const exists = baseline.some((m) => pageMatchedKey(m.fileId, m.frame) === key)
+  const next = exists
+    ? baseline.filter((m) => pageMatchedKey(m.fileId, m.frame) !== key)
+    : [...baseline, { fileId: payload.fileId, frame: payload.frame }]
+  const matches = next.length
+    ? next.map((m) => {
+      const doc = labelDocs.value.find((d) => d.fileId === m.fileId)
+      const frameBox = doc?.frames?.find((f) => f.no === m.frame)
+      return {
+        fileId: m.fileId,
+        frame: m.frame,
+        bbox: frameBox
+          ? { minX: frameBox.minX, minY: frameBox.minY, maxX: frameBox.maxX, maxY: frameBox.maxY }
+          : null,
+      }
+    })
+    // 全部取消时写一条哨兵，表达「人工确认不关联」，避免又回落到自动匹配
+    : [{ fileId: 0, frame: MANUAL_EMPTY_FRAME, bbox: null }]
+  try {
+    await boqApi.saveCableDrawingMatches(props.projectId, row.id, matches)
+    manualMatches.value = await boqApi.cableDrawingMatches(props.projectId)
+    hitCache.clear()
+    ElMessage.success(exists ? '已取消关联此页' : '已关联此页')
+  } catch {
+    ElMessage.error('保存关联失败')
+  }
+}
+
+/** 恢复自动匹配：删掉该段全部人工记录（含清空哨兵） */
+async function restoreAuto(row: FixedSegmentVO) {
+  try {
+    await boqApi.saveCableDrawingMatches(props.projectId, row.id, [])
+    manualMatches.value = await boqApi.cableDrawingMatches(props.projectId)
+    hitCache.clear()
+    ElMessage.success('已恢复自动匹配')
+  } catch {
+    ElMessage.error('恢复自动匹配失败')
+  }
+}
 
 function onQuery() {
   page.value = 1
@@ -442,13 +597,15 @@ function goToCoreBoq(core?: number) {
 async function reload() {
   loading.value = true
   try {
-    const [segmentRows, boqRows, files] = await Promise.all([
+    const [segmentRows, boqRows, files, matches] = await Promise.all([
       boqApi.fixedSegments(props.projectId),
       boqApi.all(props.projectId),
       projectApi.files(props.projectId),
+      boqApi.cableDrawingMatches(props.projectId),
     ])
     segments.value = segmentRows
     boqItems.value = boqRows
+    manualMatches.value = matches
     labelDocs.value = await loadLabelDocs(files)
     hitCache.clear()
     emit('count', segments.value.length)
@@ -483,9 +640,11 @@ async function loadLabelDocs(files: FileVO[]): Promise<DrawingLabelDoc[]> {
           })
           frameSpecs.set(table.frame, specs)
         })
-        return { fileId: file.id, fileName: file.fileName, labels, frameSpecs }
+        const frames = ((data?.frames ?? []) as DrawingLabelDoc['frames'])
+        return { fileId: file.id, fileName: file.fileName, labels, frameSpecs, frames }
       } catch {
-        return { fileId: file.id, fileName: file.fileName, labels: [] as DrawingTextLabel[], frameSpecs: new Map() }
+        return { fileId: file.id, fileName: file.fileName, labels: [] as DrawingTextLabel[],
+          frameSpecs: new Map(), frames: [] }
       }
     }),
   )
@@ -592,6 +751,17 @@ onMounted(reload)
   margin: 10px 0 0;
   color: #909399;
   font-size: 12px;
+}
+.manual-tag {
+  margin-left: 2px;
+  height: 16px;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 14px;
+}
+.restore-btn {
+  margin-left: 4px;
+  color: #909399;
 }
 .muted {
   color: #a8abb2;

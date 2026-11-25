@@ -2,6 +2,7 @@ package com.zjlt.preaudit.module.boq.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zjlt.preaudit.common.api.PageResult;
 import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.exception.BizException;
@@ -11,11 +12,13 @@ import com.zjlt.preaudit.module.boq.entity.BoqDrawingEdit;
 import com.zjlt.preaudit.module.boq.entity.BoqDrawingMatch;
 import com.zjlt.preaudit.module.boq.entity.BoqDrawingMerge;
 import com.zjlt.preaudit.module.boq.entity.BoqFixedSegment;
+import com.zjlt.preaudit.module.boq.entity.CableDrawingMatch;
 import com.zjlt.preaudit.module.boq.entity.BoqItem;
 import com.zjlt.preaudit.module.boq.mapper.BoqDrawingEditMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMatchMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMergeMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqFixedSegmentMapper;
+import com.zjlt.preaudit.module.boq.mapper.CableDrawingMatchMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqItemMapper;
 import com.zjlt.preaudit.module.boq.parser.BoqExcelParser;
 import com.zjlt.preaudit.module.check.dto.CheckDtos;
@@ -23,6 +26,8 @@ import com.zjlt.preaudit.module.check.service.FeeCheckService;
 import com.zjlt.preaudit.module.issue.entity.Issue;
 import com.zjlt.preaudit.module.issue.mapper.IssueMapper;
 import com.zjlt.preaudit.module.project.entity.Project;
+import com.zjlt.preaudit.module.project.entity.ProjectFile;
+import com.zjlt.preaudit.module.project.mapper.ProjectFileMapper;
 import com.zjlt.preaudit.module.project.mapper.ProjectMapper;
 import com.zjlt.preaudit.module.rule.entity.RuleFee;
 import com.zjlt.preaudit.module.rule.entity.RuleQuota;
@@ -50,12 +55,18 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class BoqService {
 
+    /** 人工确认「该段不关联任何图纸」的哨兵图页号，用于压住按段名自动匹配的结果 */
+    public static final int MANUAL_EMPTY_FRAME = -1;
+
     private final BoqItemMapper boqItemMapper;
     private final BoqDrawingMatchMapper drawingMatchMapper;
     private final BoqDrawingMergeMapper drawingMergeMapper;
     private final BoqDrawingEditMapper drawingEditMapper;
     private final BoqFixedSegmentMapper fixedSegmentMapper;
+    private final CableDrawingMatchMapper cableDrawingMatchMapper;
     private final ProjectMapper projectMapper;
+    private final ProjectFileMapper projectFileMapper;
+    private final ObjectMapper objectMapper;
     private final RuleQuotaMapper ruleQuotaMapper;
     private final IssueMapper issueMapper;
     private final BoqExcelParser parser;
@@ -388,6 +399,9 @@ public class BoqService {
                 .eq(BoqDrawingMerge::getProjectId, projectId));
         drawingEditMapper.delete(Wrappers.<BoqDrawingEdit>lambdaQuery()
                 .eq(BoqDrawingEdit::getProjectId, projectId));
+        // 段落 id 会随清单整体替换而变，人工图纸关联一并清掉
+        cableDrawingMatchMapper.delete(Wrappers.<CableDrawingMatch>lambdaQuery()
+                .eq(CableDrawingMatch::getProjectId, projectId));
         boqItemMapper.delete(Wrappers.<BoqItem>lambdaQuery().eq(BoqItem::getProjectId, projectId));
         fixedSegmentMapper.delete(Wrappers.<BoqFixedSegment>lambdaQuery().eq(BoqFixedSegment::getProjectId, projectId));
         issueMapper.delete(Wrappers.<Issue>lambdaQuery().eq(Issue::getProjectId, projectId));
@@ -438,6 +452,93 @@ public class BoqService {
                         s.getCoreCount(), s.getLength(), s.getAmount(), s.getDedupKey(),
                         s.getDupGroup(), s.getDupType()))
                 .toList();
+    }
+
+    /** 施工光缆段的人工图纸关联：全项目一次取出，前端按 segmentId 归组 */
+    public List<BoqDtos.CableDrawingMatchVO> listCableDrawingMatches(Long projectId) {
+        return cableDrawingMatchMapper.selectList(Wrappers.<CableDrawingMatch>lambdaQuery()
+                        .eq(CableDrawingMatch::getProjectId, projectId)
+                        .orderByAsc(CableDrawingMatch::getSegmentId, CableDrawingMatch::getId))
+                .stream()
+                .map(m -> new BoqDtos.CableDrawingMatchVO(m.getId(), m.getSegmentId(), m.getFileId(),
+                        m.getFrame(), parseBounds(m.getBbox())))
+                .toList();
+    }
+
+    /**
+     * 保存施工光缆段的图纸关联：整段覆盖。
+     * matches 为空表示「恢复自动匹配」，删除全部人工记录；
+     * 传 frame=-1 的哨兵记录表示「人工确认不关联任何图纸」，用于压住自动匹配结果。
+     */
+    @Transactional
+    public void saveCableDrawingMatches(Long projectId, BoqDtos.CableDrawingMatchReq req) {
+        if (req == null || req.segmentId() == null) {
+            throw new BizException("缺少施工光缆段");
+        }
+        BoqFixedSegment segment = fixedSegmentMapper.selectById(req.segmentId());
+        if (segment == null || !projectId.equals(segment.getProjectId())) {
+            throw new BizException(404, "施工光缆段不存在：" + req.segmentId());
+        }
+        // 整段覆盖：先删该段旧关联，再逐条插入
+        cableDrawingMatchMapper.delete(Wrappers.<CableDrawingMatch>lambdaQuery()
+                .eq(CableDrawingMatch::getProjectId, projectId)
+                .eq(CableDrawingMatch::getSegmentId, req.segmentId()));
+        if (req.matches() == null || req.matches().isEmpty()) {
+            return;
+        }
+        for (BoqDtos.CableDrawingMatchReq.CableMatchItem item : req.matches()) {
+            if (item == null) {
+                continue;
+            }
+            // 哨兵：人工确认该段不关联任何图纸
+            if (item.frame() != null && item.frame() == MANUAL_EMPTY_FRAME) {
+                CableDrawingMatch empty = new CableDrawingMatch();
+                empty.setProjectId(projectId);
+                empty.setSegmentId(req.segmentId());
+                empty.setFileId(0L);
+                empty.setFrame(MANUAL_EMPTY_FRAME);
+                cableDrawingMatchMapper.insert(empty);
+                continue;
+            }
+            if (item.fileId() == null) {
+                continue;
+            }
+            ProjectFile file = projectFileMapper.selectById(item.fileId());
+            if (file == null || !projectId.equals(file.getProjectId())) {
+                throw new BizException(400, "图纸文件不属于本项目：" + item.fileId());
+            }
+            CableDrawingMatch match = new CableDrawingMatch();
+            match.setProjectId(projectId);
+            match.setSegmentId(req.segmentId());
+            match.setFileId(item.fileId());
+            match.setFrame(item.frame());
+            match.setBbox(writeBounds(item.bbox()));
+            cableDrawingMatchMapper.insert(match);
+        }
+    }
+
+    private BoqDtos.BoundsVO parseBounds(String json) {
+        if (!StringUtils.hasText(json)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, BoqDtos.BoundsVO.class);
+        } catch (Exception e) {
+            log.warn("解析关联定位范围失败：{}", json, e);
+            return null;
+        }
+    }
+
+    private String writeBounds(BoqDtos.BoundsVO bbox) {
+        if (bbox == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(bbox);
+        } catch (Exception e) {
+            log.warn("写入关联定位范围失败：{}", bbox, e);
+            return null;
+        }
     }
 
     /** 清单行的人工匹配结论（MATCH 指定图纸材料 / UNMATCH 取消匹配） */

@@ -4,6 +4,7 @@ export interface RouteMetaItem {
   path: string
   title: string
   icon: string
+  managerOnly?: boolean
 }
 
 export function useRouteMeta(): RouteMetaItem[] {
@@ -15,5 +16,6 @@ export function useRouteMeta(): RouteMetaItem[] {
       path: String(c.path),
       title: String(c.meta!.title),
       icon: String(c.meta!.icon ?? 'Menu'),
+      managerOnly: Boolean(c.meta!.managerOnly),
     }))
 }

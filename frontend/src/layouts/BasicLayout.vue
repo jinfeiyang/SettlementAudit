@@ -61,6 +61,7 @@ import {
   Document,
   Folder,
   Odometer,
+  User,
   Warning,
   Menu as IconMenu,
 } from '@element-plus/icons-vue'
@@ -71,6 +72,7 @@ const iconMap: Record<string, any> = {
   Warning,
   Document,
   Collection,
+  User,
   Menu: IconMenu,
 }
 
@@ -79,7 +81,7 @@ const router = useRouter()
 const store = useAppStore()
 
 const menus = computed(() =>
-  useMenus().map((m) => ({
+  useMenus().filter((m) => !m.managerOnly || store.isManager).map((m) => ({
     path: m.path.replace(/^\//, ''),
     title: m.title,
     icon: m.icon,

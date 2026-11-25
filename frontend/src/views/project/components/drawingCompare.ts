@@ -236,6 +236,16 @@ export interface DrawingLabelDoc {
   labels: import('@/api').DrawingTextLabel[]
   /** 各图框页上的材料规格（图纸材料表），用于把段名命中页收敛到有对应光缆规格的页 */
   frameSpecs?: Map<number, string[]>
+  /** 图框列表，供手动关联时选择具体页 */
+  frames?: Array<{
+    no: number
+    sheet?: string | null
+    title?: string | null
+    minX: number
+    minY: number
+    maxX: number
+    maxY: number
+  }>
 }
 
 /** 段落名命中的图纸来源：载着页码/图名/坐标，直接交给 DrawingJump 定位 */

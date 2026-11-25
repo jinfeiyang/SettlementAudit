@@ -42,7 +42,7 @@ public class DemoDataInitializer implements ApplicationRunner {
     }
 
     private void initUsers() {
-        upsertUser("admin", "造价员-演示", Dict.ROLE_AUDITOR);
+        upsertUser("admin", "系统管理员", Dict.ROLE_MANAGER);
         upsertUser("manager", "项目经理-演示", Dict.ROLE_MANAGER);
     }
 

@@ -157,6 +157,20 @@ CREATE TABLE IF NOT EXISTS boq_fixed_segment (
   KEY idx_dedup (project_id, dedup_key)
 ) COMMENT '表七光缆施工基准价逐段明细';
 
+-- 施工光缆段与图纸页的人工关联：一段可关联多页，一页一条记录
+CREATE TABLE IF NOT EXISTS cable_drawing_match (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  project_id BIGINT NOT NULL,
+  segment_id BIGINT NOT NULL COMMENT '施工光缆段 id（boq_fixed_segment.id）',
+  file_id BIGINT NOT NULL COMMENT '图纸文件 id',
+  frame INT COMMENT '图框序号，NULL 表示图框外',
+  bbox VARCHAR(500) COMMENT '定位范围 JSON：minX/minY/maxX/maxY',
+  deleted TINYINT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_project_segment (project_id, segment_id)
+) COMMENT '施工光缆段与图纸页的人工关联';
+
 -- 4. 规则库（外置可配置，带版本与生效时间）
 CREATE TABLE IF NOT EXISTS rule_quota (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
