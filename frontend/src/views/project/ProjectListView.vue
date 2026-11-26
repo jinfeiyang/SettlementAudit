@@ -8,14 +8,20 @@
     </template>
 
     <el-form :inline="true" class="filters">
-      <el-form-item label="关键字">
+      <el-form-item label="项目名称">
         <el-input
-          v-model="query.keyword"
-          placeholder="项目名称 / 编号"
+          v-model="query.projectName"
+          placeholder="项目名称模糊匹配"
           clearable
-          style="width: 220px"
+          style="width: 240px"
           @keyup.enter="reload"
         />
+      </el-form-item>
+      <el-form-item label="合同编号">
+        <el-input v-model="query.contractNo" placeholder="模糊匹配" clearable style="width: 200px" @keyup.enter="reload" />
+      </el-form-item>
+      <el-form-item label="订单编号">
+        <el-input v-model="query.orderNo" placeholder="模糊匹配" clearable style="width: 220px" @keyup.enter="reload" />
       </el-form-item>
       <el-form-item label="状态">
         <el-select v-model="query.status" placeholder="全部" clearable style="width: 140px">
@@ -26,6 +32,27 @@
         <el-select v-model="query.projectManager" placeholder="全部" clearable filterable style="width: 160px">
           <el-option v-for="m in managerOptions" :key="m" :label="m" :value="m" />
         </el-select>
+      </el-form-item>
+      <el-form-item label="地市">
+        <el-select v-model="query.city" placeholder="全部" clearable filterable style="width: 120px">
+          <el-option v-for="c in CITY_NAMES" :key="c" :label="c" :value="c" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="施工单位">
+        <el-input v-model="query.builderUnit" placeholder="模糊匹配" clearable style="width: 180px" @keyup.enter="reload" />
+      </el-form-item>
+      <el-form-item label="监理单位">
+        <el-input v-model="query.supervisorUnit" placeholder="模糊匹配" clearable style="width: 180px" @keyup.enter="reload" />
+      </el-form-item>
+      <el-form-item label="创建时间">
+        <el-date-picker
+          v-model="query.createRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          style="width: 240px"
+        />
       </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="reload">查询</el-button>
@@ -260,7 +287,19 @@ const statusOptions = [
   { value: 'ARCHIVED', label: '已归档' },
 ]
 
-const query = reactive({ keyword: '', status: '', projectManager: '', page: 1, size: 10 })
+const query = reactive({
+  projectName: '',
+  contractNo: '',
+  orderNo: '',
+  status: '',
+  projectManager: '',
+  city: '',
+  builderUnit: '',
+  supervisorUnit: '',
+  createRange: [] as string[],
+  page: 1,
+  size: 10,
+})
 /** 项目经理筛选项：从已加载的项目里提取，避免维护固定名单 */
 const managerOptions = computed(() =>
   [...new Set(rows.value.map((r) => r.projectManager).filter((m): m is string => !!m))].sort())
@@ -287,7 +326,12 @@ const rules: FormRules = {
 async function reload() {
   loading.value = true
   try {
-    const res = await projectApi.page({ ...query })
+    const { createRange, ...rest } = query
+    const res = await projectApi.page({
+      ...rest,
+      createStart: createRange?.[0] || undefined,
+      createEnd: createRange?.[1] || undefined,
+    })
     rows.value = res.records
     total.value = res.total
   } finally {
@@ -296,9 +340,15 @@ async function reload() {
 }
 
 function reset() {
-  query.keyword = ''
+  query.projectName = ''
+  query.contractNo = ''
+  query.orderNo = ''
   query.status = ''
   query.projectManager = ''
+  query.city = ''
+  query.builderUnit = ''
+  query.supervisorUnit = ''
+  query.createRange = []
   query.page = 1
   reload()
 }

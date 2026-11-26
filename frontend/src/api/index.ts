@@ -291,7 +291,13 @@ export const projectApi = {
   parseFileSync: (fileId: number) => request.post<FileVO>(`/files/${fileId}/parse-sync`),
   deleteFile: (fileId: number) => request.delete<void>(`/files/${fileId}`),
   downloadFile: (fileId: number, name: string) => download(`/files/${fileId}/download`, name),
-  parseResult: (fileId: number) => request.get<Record<string, any>>(`/files/${fileId}/result`),
+  parseResult: (fileId: number) => request.get<Record<string, any>>(`/files/${fileId}/result`, {
+    // 材料明细编辑保存后必须立即看到新解析结果，禁用浏览器/代理对 GET 的缓存
+    params: { _t: Date.now() },
+  }),
+  /** 保存量算明细中编辑后的材料表，后端重算归纳统计、光缆长度与解析摘要 */
+  saveMaterialTables: (fileId: number, tables: Record<string, any>[]) =>
+    request.put<Record<string, any>>(`/files/${fileId}/material-tables`, { tables }),
   /** 人工修正图纸上某材料某分项的数量，保存后随解析结果一起返回 */
   saveQuantityFix: (fileId: number, materialKey: string, partKey: string, value: number) =>
     request.put<void>(`/files/${fileId}/quantity-fix`, { materialKey, partKey, value }),

@@ -7,6 +7,10 @@ import com.zjlt.preaudit.common.util.JsonUtil;
 import com.zjlt.preaudit.common.util.TextUtil;
 import com.zjlt.preaudit.module.ai.client.AiServiceClient;
 import com.zjlt.preaudit.module.boq.dto.BoqDtos;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingEdit;
+import com.zjlt.preaudit.module.boq.entity.BoqDrawingMerge;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingEditMapper;
+import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMergeMapper;
 import com.zjlt.preaudit.module.boq.service.BoqService;
 import com.zjlt.preaudit.module.project.dto.ProjectDtos;
 import com.zjlt.preaudit.module.project.entity.ProjectFile;
@@ -42,6 +46,8 @@ public class ProjectFileService {
     private final ProjectService projectService;
     private final FileStorageService storage;
     private final BoqService boqService;
+    private final BoqDrawingEditMapper drawingEditMapper;
+    private final BoqDrawingMergeMapper drawingMergeMapper;
     private final AiServiceClient aiClient;
 
     @Transactional
@@ -148,6 +154,39 @@ public class ProjectFileService {
         }
         String message = String.valueOf(data.getOrDefault("summary", "图纸解析完成"));
         updateStatus(file, Dict.PARSE_SUCCESS, null, message, JsonUtil.toJson(data));
+    }
+
+    /**
+     * 保存量算结果里人工编辑后的材料表，并让 AI 服务重新生成全部派生数据。
+     * 与「重新解析」一致：归纳统计、光缆长度、解析摘要整体替换，旧的数量分项修正不再带入。
+     */
+    @Transactional
+    public Map<String, Object> saveMaterialTables(Long fileId, List<Map<String, Object>> tables) {
+        ProjectFile file = requireFile(fileId);
+        if (!Dict.FILE_DXF.equals(file.getFileType()) && !Dict.FILE_DWG.equals(file.getFileType())) {
+            throw new BizException("仅图纸支持编辑材料表：" + file.getFileName());
+        }
+        if (tables == null) {
+            throw new BizException("材料表不能为空");
+        }
+        Path path = storage.resolve(file.getStoragePath());
+        Optional<Map<String, Object>> result = aiClient.parseDrawingEdited(path, file.getFileName(), tables);
+        if (result.isEmpty()) {
+            throw new BizException(503, "AI/解析服务不可用，无法重算材料表");
+        }
+        Map<String, Object> data = result.get();
+        if ("FAILED".equalsIgnoreCase(String.valueOf(data.getOrDefault("status", "")))) {
+            throw new BizException(422, String.valueOf(data.getOrDefault("message", "材料表重算失败")));
+        }
+        String message = String.valueOf(data.getOrDefault("summary", "材料表已更新"));
+        // 明细表已经是最新口径，图纸清单里的「人工编辑/合并组」会覆盖或改名新解析值，
+        // 造成“明细改了但图纸清单没变”，这里按重新解析语义一并清掉。
+        drawingEditMapper.delete(Wrappers.<BoqDrawingEdit>lambdaQuery()
+                .eq(BoqDrawingEdit::getProjectId, file.getProjectId()));
+        drawingMergeMapper.delete(Wrappers.<BoqDrawingMerge>lambdaQuery()
+                .eq(BoqDrawingMerge::getProjectId, file.getProjectId()));
+        updateStatus(file, Dict.PARSE_SUCCESS, null, message, JsonUtil.toJson(data));
+        return data;
     }
 
     /**

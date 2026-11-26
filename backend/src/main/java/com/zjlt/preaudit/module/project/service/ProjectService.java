@@ -34,7 +34,10 @@ import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,22 +93,55 @@ public class ProjectService {
         }
     }
 
-    public PageResult<ProjectDtos.ProjectVO> page(String keyword, String status, String engType,
-                                                  String projectManager, long page, long size) {
+    public PageResult<ProjectDtos.ProjectVO> page(String projectName, String status, String engType,
+                                                  String projectManager, String contractNo, String orderNo,
+                                                  String city, String builderUnit, String supervisorUnit,
+                                                  String createStart, String createEnd,
+                                                  long page, long size) {
         Page<Project> p = new Page<>(Math.max(1, page), Math.min(100, Math.max(1, size)));
         LambdaQueryWrapper<Project> w = Wrappers.<Project>lambdaQuery()
+                .like(StringUtils.hasText(projectName), Project::getProjectName, trim(projectName))
                 .eq(StringUtils.hasText(status), Project::getStatus, status)
                 .eq(StringUtils.hasText(engType), Project::getEngType, engType)
+                .eq(StringUtils.hasText(city), Project::getCity, trim(city))
+                .eq(StringUtils.hasText(projectManager), Project::getProjectManager, trim(projectManager))
+                .like(StringUtils.hasText(contractNo), Project::getContractNo, trim(contractNo))
+                .like(StringUtils.hasText(orderNo), Project::getOrderNo, trim(orderNo))
+                .like(StringUtils.hasText(builderUnit), Project::getBuilderUnit, trim(builderUnit))
+                .like(StringUtils.hasText(supervisorUnit), Project::getSupervisorUnit, trim(supervisorUnit))
+                .ge(StringUtils.hasText(createStart), Project::getCreateTime, parseDayStart(createStart))
+                .le(StringUtils.hasText(createEnd), Project::getCreateTime, parseDayEnd(createEnd))
                 .orderByDesc(Project::getCreateTime);
-        if (StringUtils.hasText(projectManager)) {
-            w.eq(Project::getProjectManager, projectManager.trim());
-        }
-        if (StringUtils.hasText(keyword)) {
-            String kw = keyword.trim();
-            w.and(q -> q.like(Project::getProjectName, kw).or().like(Project::getProjectNo, kw));
-        }
         projectMapper.selectPage(p, w);
         return PageResult.of(p, this::toVO);
+    }
+
+    private String trim(String value) {
+        return value == null ? null : value.trim();
+    }
+
+    private LocalDateTime parseDayStart(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String text = value.trim().replace(' ', 'T');
+        try {
+            return LocalDateTime.parse(text);
+        } catch (DateTimeParseException ignored) {
+            return LocalDate.parse(text.substring(0, 10)).atStartOfDay();
+        }
+    }
+
+    private LocalDateTime parseDayEnd(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String text = value.trim().replace(' ', 'T');
+        try {
+            return LocalDateTime.parse(text);
+        } catch (DateTimeParseException ignored) {
+            return LocalDate.parse(text.substring(0, 10)).atTime(LocalTime.MAX);
+        }
     }
 
     @Transactional

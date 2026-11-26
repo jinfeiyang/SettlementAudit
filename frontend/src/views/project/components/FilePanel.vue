@@ -150,11 +150,25 @@
         </el-tab-pane>
 
         <el-tab-pane :label="`材料清单明细 (${materialTables.length})`" name="detail">
+          <div class="detail-toolbar">
+            <template v-if="!detailEditing">
+              <el-button type="primary" plain :disabled="!materialTables.length" @click="startDetailEdit">
+                编辑明细
+              </el-button>
+              <span class="edit-hint">按图纸原文纠正列错位、名称或数量后可整体重算</span>
+            </template>
+            <template v-else>
+              <el-button type="primary" :loading="savingDetail" @click="saveDetailEdit">保存并重算</el-button>
+              <el-button :disabled="savingDetail" @click="cancelDetailEdit">取消</el-button>
+              <span class="edit-hint">保存后重新计算归纳统计、光缆长度、解析摘要，并同步图纸清单/工程量清单；原有数量分项修正、图纸清单人工编辑和合并组会清空</span>
+            </template>
+          </div>
           <div v-if="materialTables.length" class="material-scroll">
             <div v-for="table in materialTables" :key="table.table" class="material-table">
               <div class="material-title">
                 表 {{ table.frameIndex ?? table.table }}
                 <span v-if="table.frame" class="material-block">{{ frameLabel(table) }}</span>
+                <span class="table-jump">查看图纸：<DrawingJump :sources="tableSources(table)" :fallback="resultFallback" /></span>
               </div>
               <el-table :data="table.rows" size="small" border>
                 <el-table-column
@@ -163,9 +177,20 @@
                   :label="column"
                   min-width="90"
                 >
-                  <template #default="{ row }">{{ row[index] }}</template>
+                  <template #default="{ row }">
+                    <el-input v-if="detailEditing" v-model="row[index]" size="small" />
+                    <span v-else>{{ row[index] }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="detailEditing" label="操作" width="72" fixed="right">
+                  <template #default="{ $index }">
+                    <el-button link type="danger" @click="removeTableRow(table, $index)">删除</el-button>
+                  </template>
                 </el-table-column>
               </el-table>
+              <el-button v-if="detailEditing" link type="primary" class="add-row" @click="addTableRow(table)">
+                + 添加行
+              </el-button>
             </div>
           </div>
           <el-empty
@@ -343,6 +368,8 @@ import {
   toDrawingCable,
 } from '@/utils/cableCheck'
 import DrawingViewer from './DrawingViewer.vue'
+import DrawingJump from './DrawingJump.vue'
+import type { Bounds, DrawingFrameItem, DrawingSource } from './drawingCompare'
 
 const props = defineProps<{ projectId: number }>()
 const emit = defineEmits<{ (e: 'changed'): void; (e: 'go', tab: string): void }>()
@@ -353,6 +380,9 @@ const uploading = ref(false)
 const resultVisible = ref(false)
 const drawingVisible = ref(false)
 const drawingFile = ref<FileVO | null>(null)
+/** 当前量算结果对应的图纸文件：明细表跳转回图纸时要用 */
+const resultFile = ref<FileVO | null>(null)
+const drawingFrames = ref<DrawingFrameItem[]>([])
 const boqResultVisible = ref(false)
 const boqFile = ref<FileVO | null>(null)
 const boqTypeStats = ref<{ label: string; count: number }[]>([])
@@ -360,17 +390,24 @@ const result = ref<Record<string, any>>({})
 const measure = ref<Record<string, any>>({})
 /** 量算结果弹窗的页签：量算概览 / 材料归纳统计 / 材料清单明细 / 光缆长度核查 */
 const resultTab = ref('overview')
+const detailEditing = ref(false)
+const savingDetail = ref(false)
+/** 进入编辑前的原始表格，取消时按它恢复 */
+let originalTables: MaterialTable[] = []
 const projectInfo = ref<{ label: string; value: string }[]>([])
 const blockRows = ref<{ block: string; count: number }[]>([])
-const materialTables = ref<{
+type MaterialTable = {
   table: number
   frameIndex: number | null
   frame: number | null
   frameSheet: string | null
   frameTitle: string | null
+  box?: Bounds | null
   columns: string[]
   rows: string[][]
-}[]>([])
+  [key: string]: any
+}
+const materialTables = ref<MaterialTable[]>([])
 const materialSummary = ref<{ name: string; spec: string; unit: string; quantity: number; tableCount: number }[]>([])
 /** 清单行：光缆长度核查要拿图纸算出来的量跟清单申报量比 */
 const boqItems = ref<BoqItemVO[]>([])
@@ -452,22 +489,69 @@ function gotoBoq() {
   emit('go', 'boq')
 }
 
+/** 把一份解析结果铺到弹窗的各页签 */
+function applyParseResult(data: Record<string, any>) {
+  result.value = data
+  drawingFrames.value = (data.frames ?? []) as DrawingFrameItem[]
+  measure.value = data.measure ?? {}
+  const blocks: Record<string, number> = measure.value.deviceBlocks ?? {}
+  blockRows.value = Object.keys(blocks).map((block) => ({ block, count: blocks[block] }))
+  projectInfo.value = data.projectInfo ?? []
+  materialTables.value = (data.materials ?? []) as MaterialTable[]
+  materialSummary.value = data.materialSummary ?? []
+}
+
 /** 查看图纸解析与量算结果（A1：线路长度、设备数量），并做光缆长度核查 */
-async function showResult(row: FileVO) {
-  result.value = await projectApi.parseResult(row.id)
-  measure.value = result.value.measure ?? {}
+async function showResult(row: FileVO, tab = 'overview') {
+  const data = await projectApi.parseResult(row.id)
+  resultFile.value = row
+  applyParseResult(data)
   try {
     boqItems.value = await boqApi.all(props.projectId)
   } catch {
     boqItems.value = []
   }
-  const blocks: Record<string, number> = measure.value.deviceBlocks ?? {}
-  blockRows.value = Object.keys(blocks).map((block) => ({ block, count: blocks[block] }))
-  projectInfo.value = result.value.projectInfo ?? []
-  materialTables.value = result.value.materials ?? []
-  materialSummary.value = result.value.materialSummary ?? []
-  resultTab.value = 'overview'
+  resultTab.value = tab
   resultVisible.value = true
+}
+
+function startDetailEdit() {
+  originalTables = JSON.parse(JSON.stringify(materialTables.value))
+  detailEditing.value = true
+}
+
+function cancelDetailEdit() {
+  materialTables.value = JSON.parse(JSON.stringify(originalTables))
+  detailEditing.value = false
+}
+
+function addTableRow(table: MaterialTable) {
+  table.rows.push(Array.from({ length: table.columns.length }, () => ''))
+}
+
+function removeTableRow(table: MaterialTable, index: number) {
+  table.rows.splice(index, 1)
+}
+
+/** 保存编辑后的材料表：后端按完整解析链路重算，避免只改明细不改汇总 */
+async function saveDetailEdit() {
+  if (!resultFile.value) {
+    return
+  }
+  savingDetail.value = true
+  try {
+    const data = await projectApi.saveMaterialTables(resultFile.value.id, materialTables.value)
+    applyParseResult(data)
+    detailEditing.value = false
+    originalTables = []
+    resultTab.value = 'detail'
+    emit('changed')
+    ElMessage.success('材料明细已保存并重算，归纳统计、光缆长度与图纸清单已同步')
+  } catch (error: any) {
+    ElMessage.error(error?.message || '材料明细保存失败')
+  } finally {
+    savingDetail.value = false
+  }
 }
 
 /** 表格识别方式：后端会说明这张图是用哪种画法抽出表的，0 张时提示未识别 */
@@ -491,6 +575,31 @@ function frameLabel(table: { frame: number | null; frameSheet: string | null; fr
   const title = table.frameTitle ? ` · ${table.frameTitle}` : ''
   return `第 ${table.frameSheet} 张${title}`
 }
+
+/** 量算结果明细里的一张材料表 → 图纸预览来源：有图框定位整页，无图框按表格范围定位 */
+function tableSources(table: (typeof materialTables.value)[number]): DrawingSource[] {
+  if (!resultFile.value) {
+    return []
+  }
+  const frame = drawingFrames.value.find((item) => item.no === table.frame)
+  const bbox = frame
+    ? { minX: frame.minX, minY: frame.minY, maxX: frame.maxX, maxY: frame.maxY }
+    : null
+  return [{
+    fileId: resultFile.value.id,
+    fileName: resultFile.value.fileName,
+    frame: table.frame ?? null,
+    sheet: table.frameSheet ?? frame?.sheet ?? null,
+    title: table.frameTitle ?? frame?.title ?? null,
+    bbox,
+    tableBox: table.box ?? null,
+    tables: [table.table],
+  }]
+}
+
+const resultFallback = computed(() => resultFile.value
+  ? { fileId: resultFile.value.id, fileName: resultFile.value.fileName }
+  : null)
 
 function typeLabel(type: string) {
   switch (type) {
@@ -615,6 +724,23 @@ onBeforeUnmount(stopPoll)
 .material-block {
   margin-left: 6px;
   color: #a8abb2;
+}
+.table-jump {
+  margin-left: 12px;
+  color: #909399;
+}
+.detail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.edit-hint {
+  font-size: 12px;
+  color: #909399;
+}
+.add-row {
+  margin-top: 6px;
 }
 
 /* 光缆长度核查：差异为负（清单少计）标红，通过标绿 */

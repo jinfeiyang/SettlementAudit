@@ -767,7 +767,9 @@ def _split_row(row) -> list[list[tuple[float, float, str]]]:
     """把同一行里并排的两张表拆开：列距中位数的 4 倍以上算跨表。
 
     多张图横向排在一起时，两处表格的表头常常 y 完全相同，不拆就会把两张表合成
-    一张列数翻倍的表。
+    一张列数翻倍的表。但「项目名称」列很宽时，右侧「单位/数量」会被距离阈值
+    误判成另一张表。右半截没有自己的起始列（序号/名称）时就并回去，只把真正
+    并排的第二张表拆开。
     """
     gaps = [row[i + 1][0] - row[i][0] for i in range(len(row) - 1)]
     if not gaps:
@@ -779,7 +781,71 @@ def _split_row(row) -> list[list[tuple[float, float, str]]]:
             clusters.append([item])
         else:
             clusters[-1].append(item)
-    return clusters
+    start_hints = {"序号", "名称", "项目名称"}
+    merged: list[list[tuple[float, float, str]]] = []
+    for cluster in clusters:
+        hints: set[str] = set()
+        for _, _, text in cluster:
+            hints |= _header_hints(text)
+        continuation = bool(hints) and not (hints & start_hints)
+        if merged and continuation:
+            merged[-1].extend(cluster)
+        else:
+            merged.append(cluster)
+    return merged
+
+
+def _infer_columns(centers: list[float], columns: list[str],
+                   body_cells: list[list[tuple[float, float, str]]]) -> tuple[list[float], list[str]]:
+    """表头漏写列时按数据行的文字 x 坐标补出列中心与列名。
+
+    现场图纸里常有只写了「序号」「单位」两个表头、材料名称和规格的表头文字
+    丢掉的情况。只按表头归列会把「电杆 7米 根 1」挤成两格，归纳统计随之丢量。
+    """
+    xs = sorted({round(x, 3) for cells in body_cells for x, _, _ in cells})
+    if not xs:
+        return centers, columns
+    clusters: list[list[float]] = []
+    for x in xs:
+        if clusters and x - clusters[-1][-1] <= 1.0:
+            clusters[-1].append(x)
+        else:
+            clusters.append([x])
+    inferred = [sum(cluster) / len(cluster) for cluster in clusters]
+    if len(inferred) <= len(centers):
+        return centers, columns
+
+    mapped: dict[int, str] = {}
+    for center, name in zip(centers, columns):
+        index = min(range(len(inferred)), key=lambda i: abs(inferred[i] - center))
+        mapped[index] = name
+    result = [mapped.get(i, "") for i in range(len(inferred))]
+
+    def find(hint: str) -> int | None:
+        for i, name in enumerate(result):
+            if name and hint in _norm_header(name):
+                return i
+        return None
+
+    unit_index = find("单位")
+    has_name = find("名称") is not None
+    if find("序号") is None:
+        result[0] = "序号"
+    if unit_index is not None:
+        missing_before = [i for i in range(1, unit_index) if not result[i]]
+        for position, i in enumerate(missing_before):
+            result[i] = "材料名称" if position == 0 and not has_name else "规格程式"
+        for i in range(unit_index + 1, len(result)):
+            if not result[i]:
+                result[i] = "数量"
+    else:
+        candidates = ["材料名称", "规格程式", "数量"]
+        cursor = 0
+        for i, name in enumerate(result):
+            if not name and cursor < len(candidates):
+                result[i] = candidates[cursor]
+                cursor += 1
+    return inferred, [name or f"列{i + 1}" for i, name in enumerate(result)]
 
 
 def _merge_split_rows(body: list[list[str]]) -> list[list[str]]:
@@ -845,7 +911,8 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                 tol = min(gaps) * _COLUMN_TOL_RATIO
                 left, right = centers[0] - tol, centers[-1] + tol
 
-                body: list[list[str]] = []
+                # 先收数据行原文，等表头缺列时按文字 x 坐标补出列中心再归列
+                body_cells: list[list[tuple[float, float, str]]] = []
                 # 收表区域的文字坐标：图纸没画图框时，前端只能靠它定位到这张表所在的页面
                 used: list[tuple[float, float]] = [(x, y) for x, y, _ in sub]
                 # 单元格文字坐标：前端按「材料名称」匹配到这里，在图纸上把该名称标红
@@ -865,23 +932,22 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                     gap = prev_y - y
                     if pitches and gap > _TABLE_ROW_GAP_FACTOR * statistics.median(pitches):
                         break
-                    values = ["" for _ in centers]
+                    # 先用现有表头列做一次校验，只决定「这行算不算数据行」
+                    provisional = ["" for _ in centers]
                     filled = 0
                     for x, _, text in cells:
-                        # 按"离哪一列的列心最近"归列：文字插入点是左边缘，长的单元格名
-                        # （普通层绞式通信光缆）左边缘会离列心很远，卡死容差会把名称整列丢掉
                         index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
-                        values[index] = f"{values[index]} {text}".strip() if values[index] else text
+                        provisional[index] = f"{provisional[index]} {text}".strip() if provisional[index] else text
                         filled += 1
                     if not filled:
                         break
                     # 序号、名称都没有的"行"其实是表格下方的长度标注（管53.2、加挂25.8 之类）
-                    if not values[0] and not (len(values) > 1 and values[1]):
+                    if not provisional[0] and not (len(provisional) > 1 and provisional[1]):
                         break
                     # 只填了一格的多半是「主要材料(乙供)表」这类表标题或表注，不当数据行
-                    if filled == 1 and not values[0]:
+                    if filled == 1 and not provisional[0]:
                         continue
-                    body.append(values)
+                    body_cells.append(cells)
                     used.extend((x, y) for x, y, _ in cells)
                     table_cells.extend(
                         _cell_meta(x, y, text, height_of, default_height) for x, y, text in cells
@@ -889,8 +955,19 @@ def _text_tables(entries) -> list[dict[str, Any]]:
                     if gap > 1e-6:
                         pitches.append(gap)
                     prev_y = y
-                    if len(body) >= _TABLE_MAX_ROWS:
+                    if len(body_cells) >= _TABLE_MAX_ROWS:
                         break
+
+                centers, columns = _infer_columns(centers, columns, body_cells)
+                body: list[list[str]] = []
+                for cells in body_cells:
+                    values = ["" for _ in centers]
+                    for x, _, text in cells:
+                        # 按"离哪一列的列心最近"归列：文字插入点是左边缘，长的单元格名
+                        # （普通层绞式通信光缆）左边缘会离列心很远，卡死容差会把名称整列丢掉
+                        index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
+                        values[index] = f"{values[index]} {text}".strip() if values[index] else text
+                    body.append(values)
 
                 # 至少要有一行是真正填了多个单元格的，避免把零散标注当成表
                 if not any(row and sum(1 for cell in row if cell) >= 2 for row in body):
@@ -1396,6 +1473,39 @@ def _normalize_quota_cells(tables: list[dict[str, Any]]) -> None:
             row[code_col] = code
 
 
+# 序号 + 材料名称写进同一格：材料表两列之间没竖线时，一段 TEXT
+# （如「1 普通层绞式通信光缆」）的插入点落在序号列，整段就被归进序号格、
+# 名称列空着。归纳统计取名称列为空会直接丢掉整行，明细里却还能看到，
+# 表现就是「材料清单明细有、图纸清单没有」。
+_SEQ_NAME_CELL_RE = re.compile(r"^\s*(\d{1,3})\s+(.+?)\s*$")
+
+
+def _normalize_seq_name_cells(tables: list[dict[str, Any]]) -> None:
+    """拆开材料表里「序号 + 名称」挤在同一格里的单元格，就地修正 rows。"""
+    for table in tables:
+        columns = table["columns"]
+        name_col = _match_column(columns, _MATERIAL_NAME_KEYS)
+        seq_col = _match_column(columns, ("序号",))
+        if name_col is None or seq_col is None or name_col == seq_col:
+            continue
+        for row in table["rows"]:
+            if seq_col >= len(row) or name_col >= len(row):
+                continue
+            cell = (row[seq_col] or "").strip()
+            # 名称列已有值就不动；只处理「序号格里多写了材料名」的情况
+            if not cell or (row[name_col] or "").strip():
+                continue
+            match = _SEQ_NAME_CELL_RE.match(cell)
+            if not match:
+                continue
+            name = match.group(2).strip()
+            # 必须像材料名；定额编号+名称已由 _normalize_quota_cells 处理，不在这里抢
+            if not _CJK_RE.search(name) or _QUOTA_CELL_RE.match(cell):
+                continue
+            row[seq_col] = match.group(1)
+            row[name_col] = name
+
+
 # 材料的同物异名归一：「光交」是「光缆交接箱」的图上简称，「新建/新立」是施工动作、不是材料名。
 # 口径必须与后端 TextUtil.canonicalName、前端 match.ts 的 canonicalName 保持一致（三处同步改）。
 _OPTICAL_JOINT_BOX_SHORT = re.compile(r"光交(?!换)")
@@ -1728,13 +1838,59 @@ def extract_material_tables(doc, diagnostics: dict[str, int] | None = None,
         tables.append(table)
         if len(tables) >= _TABLE_MAX_TABLES:
             break
-    # 拆开「定额编号+名称」合并格：明细展示与归纳统计都依赖正确的列归属
+    # 拆开合并格：明细展示与归纳统计都依赖正确的列归属
     _normalize_quota_cells(tables)
+    _normalize_seq_name_cells(tables)
     return tables
 
 
+def _apply_material_edits(extracted: list[dict[str, Any]],
+                          edits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """用人工编辑后的材料表替换解析结果，再交给后续统计重新计算。
+
+    只替换 columns/rows；图框、包围盒、单元格坐标等定位信息沿用原解析结果，
+    避免用户改一个数量后整张表在图纸上失去定位。未提交的表保留原值。
+    """
+    if not edits:
+        return extracted
+    by_no = {table.get("table"): table for table in extracted if isinstance(table, dict)}
+    merged: list[dict[str, Any]] = []
+    used: set[Any] = set()
+    for edit in edits:
+        if not isinstance(edit, dict):
+            continue
+        columns = edit.get("columns")
+        rows = edit.get("rows")
+        if not isinstance(columns, list) or not isinstance(rows, list):
+            continue
+        table_no = edit.get("table")
+        base = by_no.get(table_no) if table_no in by_no else None
+        table: dict[str, Any] = dict(base) if base else {}
+        table["table"] = table_no if isinstance(table_no, int) else len(merged) + 1
+        table["columns"] = ["" if cell is None else str(cell) for cell in columns]
+        table["rows"] = [
+            ["" if cell is None else str(cell) for cell in row]
+            for row in rows if isinstance(row, list)
+        ]
+        for key in ("frame", "frameSheet", "frameTitle", "frameIndex", "pos", "box", "cells"):
+            if key in edit:
+                table[key] = edit[key]
+            elif key not in table:
+                table[key] = [] if key == "cells" else None
+        merged.append(table)
+        used.add(table_no)
+    for table in extracted:
+        if table.get("table") not in used:
+            merged.append(table)
+    merged.sort(key=lambda item: item.get("table") or 0)
+    _normalize_quota_cells(merged)
+    _normalize_seq_name_cells(merged)
+    return merged
+
+
 def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
-                    oda_converter: str = "") -> dict[str, Any]:
+                    oda_converter: str = "",
+                    material_edits: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     try:
         import ezdxf  # 延迟导入：未安装时给出可读提示
     except ImportError:
@@ -1865,6 +2021,7 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
     frames = _drawing_frames(doc)
     table_hits: dict[str, int] = {}
     materials = extract_material_tables(doc, table_hits, frames)
+    materials = _apply_material_edits(materials, material_edits or [])
 
     # 给文字标注补上图框/张号/图名和该页范围：施工光缆段落名据此回查「画在哪一页」并跳转定位。
     frames_by_no = {frame["no"]: frame for frame in frames}

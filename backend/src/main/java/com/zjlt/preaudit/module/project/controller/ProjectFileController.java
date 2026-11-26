@@ -30,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 @Tag(name = "项目资料")
 @RestController
@@ -76,6 +77,19 @@ public class ProjectFileController {
     @GetMapping("/files/{id}/result")
     public R<java.util.Map<String, Object>> result(@PathVariable Long id) {
         return R.ok(JsonUtil.toMap(fileService.requireFile(id).getParseResult()));
+    }
+
+    @Operation(summary = "保存量算明细中编辑后的材料表，并重算解析结果")
+    @SuppressWarnings("unchecked")
+    @PutMapping("/files/{id}/material-tables")
+    public R<Map<String, Object>> saveMaterialTables(@PathVariable Long id,
+                                                     @RequestBody Map<String, Object> body) {
+        Object raw = body.get("tables");
+        if (!(raw instanceof List<?> list)) {
+            throw new BizException("材料表字段 tables 必须是数组");
+        }
+        List<Map<String, Object>> tables = (List<Map<String, Object>>) list;
+        return R.ok(fileService.saveMaterialTables(id, tables));
     }
 
     @Operation(summary = "人工修正图纸上某材料的数量分项")

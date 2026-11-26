@@ -1033,16 +1033,20 @@ onBeforeUnmount(cleanup)
   z-index: 4;
   background: #fff;
   overflow: auto;
-  padding: 12px 18px;
+  padding: 0 18px 12px;
   cursor: text;
   user-select: text;
 }
 .copy-filter {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-bottom: 12px;
+  padding: 12px 0;
   margin-bottom: 4px;
+  background: #fff;
   border-bottom: 1px solid #ebeef5;
   user-select: none;
 }

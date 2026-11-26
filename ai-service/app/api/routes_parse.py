@@ -3,7 +3,9 @@
 一期路线：ODA File Converter(DWG->DXF) + ezdxf 解析，量算聚焦「线路长度、设备数量」；
 Java 业务服务对解析失败做降级处理，不影响清单核查主链路。
 """
-from fastapi import APIRouter, File, HTTPException, UploadFile
+import json
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
@@ -23,6 +25,27 @@ async def parse_dxf(file: UploadFile = File(...)):
     result = await run_in_threadpool(
         parse_dxf_bytes, data, file.filename or "drawing.dxf",
         settings.dxf_sample_limit, settings.oda_converter_path,
+    )
+    result["file"] = file.filename
+    return result
+
+
+@router.post("/dxf-edited")
+async def parse_dxf_edited(file: UploadFile = File(...), materials: str = Form(...)):
+    """按人工编辑后的材料表重新解析：重新计算归纳统计、光缆长度与解析摘要。"""
+    try:
+        edits = json.loads(materials)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"材料表不是合法 JSON：{exc}") from exc
+    if not isinstance(edits, list):
+        raise HTTPException(status_code=400, detail="材料表必须是数组")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    settings = get_settings()
+    result = await run_in_threadpool(
+        parse_dxf_bytes, data, file.filename or "drawing.dxf",
+        settings.dxf_sample_limit, settings.oda_converter_path, edits,
     )
     result["file"] = file.filename
     return result

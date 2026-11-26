@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -73,6 +74,41 @@ public class AiServiceClient {
             return Optional.empty();
         } catch (Exception e) {
             log.warn("AI 服务图纸解析不可用: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 按人工编辑后的材料表重新解析：AI 服务重新计算归纳统计、光缆长度与解析摘要。
+     */
+    public Optional<Map<String, Object>> parseDrawingEdited(Path file, String filename,
+                                                             List<Map<String, Object>> materials) {
+        if (!enabled) {
+            return Optional.empty();
+        }
+        try {
+            byte[] bytes = Files.readAllBytes(file);
+            MultiValueMap<String, Object> form = new LinkedMultiValueMap<>();
+            form.add("file", new ByteArrayResource(bytes) {
+                @Override
+                public String getFilename() {
+                    return filename;
+                }
+            });
+            form.add("materials", JsonUtil.toJson(materials));
+            Map<String, Object> result = restClient.post()
+                    .uri("/parse/dxf-edited")
+                    .contentType(MediaType.MULTIPART_FORM_DATA)
+                    .body(form)
+                    .retrieve()
+                    .body(new ParameterizedTypeReference<Map<String, Object>>() {
+                    });
+            return Optional.ofNullable(result);
+        } catch (IOException e) {
+            log.warn("读取图纸失败: {}", e.getMessage());
+            return Optional.empty();
+        } catch (Exception e) {
+            log.warn("AI 服务材料表重算不可用: {}", e.getMessage());
             return Optional.empty();
         }
     }

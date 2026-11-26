@@ -31,13 +31,22 @@ public class ProjectController {
 
     @Operation(summary = "项目分页")
     @GetMapping
-    public R<PageResult<ProjectDtos.ProjectVO>> page(@RequestParam(required = false) String keyword,
+    public R<PageResult<ProjectDtos.ProjectVO>> page(@RequestParam(required = false) String projectName,
                                                      @RequestParam(required = false) String status,
                                                      @RequestParam(required = false) String engType,
                                                      @RequestParam(required = false) String projectManager,
+                                                     @RequestParam(required = false) String contractNo,
+                                                     @RequestParam(required = false) String orderNo,
+                                                     @RequestParam(required = false) String city,
+                                                     @RequestParam(required = false) String builderUnit,
+                                                     @RequestParam(required = false) String supervisorUnit,
+                                                     @RequestParam(required = false) String createStart,
+                                                     @RequestParam(required = false) String createEnd,
                                                      @RequestParam(defaultValue = "1") long page,
                                                      @RequestParam(defaultValue = "10") long size) {
-        return R.ok(projectService.page(keyword, status, engType, projectManager, page, size));
+        return R.ok(projectService.page(projectName, status, engType, projectManager,
+                contractNo, orderNo, city, builderUnit, supervisorUnit,
+                createStart, createEnd, page, size));
     }
 
     @Operation(summary = "新建项目")
