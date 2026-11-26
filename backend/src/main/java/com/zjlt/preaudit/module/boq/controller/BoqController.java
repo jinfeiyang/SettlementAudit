@@ -5,6 +5,7 @@ import com.zjlt.preaudit.common.api.R;
 import com.zjlt.preaudit.common.util.ExcelUtil;
 import com.zjlt.preaudit.module.boq.dto.BoqDtos;
 import com.zjlt.preaudit.module.boq.service.BoqService;
+import com.zjlt.preaudit.module.boq.service.ManualConclusionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
@@ -28,6 +29,7 @@ import java.util.List;
 public class BoqController {
 
     private final BoqService boqService;
+    private final ManualConclusionService conclusions;
 
     @Operation(summary = "清单分页（含标准化与推荐定额）")
     @GetMapping
@@ -81,6 +83,11 @@ public class BoqController {
     public R<Void> saveDrawingMatch(@PathVariable Long projectId,
                                     @RequestBody BoqDtos.MatchOverrideReq req) {
         boqService.saveDrawingMatch(projectId, req);
+        conclusions.record(projectId, ManualConclusionService.MATCH, "MATCH:" + req.boqItemId(),
+                String.valueOf(req.boqItemId()), null, null,
+                "工程量清单行 " + req.boqItemId(),
+                "UNMATCH".equals(req.manualType()) ? "取消自动匹配" : "手动匹配到 " + req.drawingKey(),
+                null, req.manualType() + " / " + req.drawingKey());
         return R.ok();
     }
 
@@ -88,6 +95,7 @@ public class BoqController {
     @DeleteMapping("/drawing-matches/{boqItemId}")
     public R<Void> deleteDrawingMatch(@PathVariable Long projectId, @PathVariable Long boqItemId) {
         boqService.deleteDrawingMatch(projectId, boqItemId);
+        conclusions.markRevoked(projectId, ManualConclusionService.MATCH, "MATCH:" + boqItemId);
         return R.ok();
     }
 
@@ -102,6 +110,10 @@ public class BoqController {
     public R<Void> saveDrawingMerges(@PathVariable Long projectId,
                                      @RequestBody BoqDtos.MaterialMergeReq req) {
         boqService.saveDrawingMerges(projectId, req);
+        String members = req.memberKeys() == null ? "" : String.join(",", req.memberKeys());
+        conclusions.record(projectId, ManualConclusionService.MERGE, req.groupKey(), req.groupKey(),
+                null, null, "图纸材料合并组 " + members,
+                "合并展示为 " + req.displayName(), null, req.displayName() + " ← " + members);
         return R.ok();
     }
 
@@ -109,6 +121,7 @@ public class BoqController {
     @DeleteMapping("/drawing-merges/group/{groupKey}")
     public R<Void> deleteDrawingMerges(@PathVariable Long projectId, @PathVariable String groupKey) {
         boqService.deleteDrawingMerges(projectId, groupKey);
+        conclusions.markRevoked(projectId, ManualConclusionService.MERGE, groupKey);
         return R.ok();
     }
 
@@ -131,7 +144,16 @@ public class BoqController {
     @PostMapping("/drawing-edits")
     public R<Void> saveDrawingEdit(@PathVariable Long projectId,
                                    @RequestBody BoqDtos.MaterialEditReq req) {
+        String before = boqService.listDrawingEdits(projectId).stream()
+                .filter(v -> req.materialKey().equals(v.materialKey()))
+                .findFirst()
+                .map(v -> v.name() + "/" + v.spec() + "/" + v.unit() + "/" + v.quantity())
+                .orElse("原始解析值");
         boqService.saveDrawingEdit(projectId, req);
+        conclusions.record(projectId, ManualConclusionService.DRAWING_EDIT, req.materialKey(),
+                req.materialKey(), null, null, "图纸材料 " + req.materialKey(),
+                "改为 " + req.name() + "/" + req.spec() + "/" + req.unit() + "/" + req.quantity(),
+                before, req.name() + "/" + req.spec() + "/" + req.unit() + "/" + req.quantity());
         return R.ok();
     }
 
@@ -139,6 +161,7 @@ public class BoqController {
     @DeleteMapping("/drawing-edits/{materialKey}")
     public R<Void> deleteDrawingEdit(@PathVariable Long projectId, @PathVariable String materialKey) {
         boqService.deleteDrawingEdit(projectId, materialKey);
+        conclusions.markRevoked(projectId, ManualConclusionService.DRAWING_EDIT, materialKey);
         return R.ok();
     }
 

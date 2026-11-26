@@ -233,6 +233,9 @@
               </span>
               <span v-else class="muted">未识别到长度标注</span>
             </el-descriptions-item>
+            <el-descriptions-item label="查看图纸">
+              <DrawingJump :sources="[]" :fallback="resultFallback" />
+            </el-descriptions-item>
           </el-descriptions>
           <el-alert
             v-if="cableOverall === 'LESS'"
@@ -270,6 +273,11 @@
             </h4>
             <el-table :data="annotationSheetRows" size="small" border class="cable-table">
               <el-table-column prop="sheet" label="图签张号" width="100" />
+              <el-table-column label="图纸定位" width="100">
+                <template #default="{ row }">
+                  <DrawingJump :sources="sheetSources(row)" :fallback="resultFallback" />
+                </template>
+              </el-table-column>
               <el-table-column prop="sourceLabel" label="长度来源" width="100" />
               <el-table-column label="光缆长度（米）" width="130">
                 <template #default="{ row }">{{ formatQuantity(row.meters) }}</template>
@@ -546,7 +554,15 @@ async function saveDetailEdit() {
     originalTables = []
     resultTab.value = 'detail'
     emit('changed')
-    ElMessage.success('材料明细已保存并重算，归纳统计、光缆长度与图纸清单已同步')
+    if (data?.downstreamInvalidated) {
+      ElMessageBox.alert(
+        '材料明细已保存并重算。原核查结论、疑点和报告已失效并清空，项目状态已回到「已导入」，请重新核查并生成报告。',
+        '下游结果已失效',
+        { confirmButtonText: '知道了', type: 'warning' },
+      )
+    } else {
+      ElMessage.success('材料明细已保存并重算，归纳统计、光缆长度与图纸清单已同步')
+    }
   } catch (error: any) {
     ElMessage.error(error?.message || '材料明细保存失败')
   } finally {
@@ -600,6 +616,30 @@ function tableSources(table: (typeof materialTables.value)[number]): DrawingSour
 const resultFallback = computed(() => resultFile.value
   ? { fileId: resultFile.value.id, fileName: resultFile.value.fileName }
   : null)
+
+/** 光缆长度核查的「图签张号」→ 图纸预览来源：按张号匹配图框并定位整页 */
+function sheetSources(row: { sheet?: string | number | null }): DrawingSource[] {
+  if (!resultFile.value) {
+    return []
+  }
+  const key = String(row.sheet ?? '').replace(/\D/g, '')
+  const frame = key
+    ? drawingFrames.value.find((item) => String(item.sheet ?? '').replace(/\D/g, '') === key)
+    : undefined
+  const bbox = frame
+    ? { minX: frame.minX, minY: frame.minY, maxX: frame.maxX, maxY: frame.maxY }
+    : null
+  return [{
+    fileId: resultFile.value.id,
+    fileName: resultFile.value.fileName,
+    frame: frame?.no ?? null,
+    sheet: row.sheet ? String(row.sheet) : frame?.sheet ?? null,
+    title: frame?.title ?? null,
+    bbox,
+    tableBox: null,
+    tables: [],
+  }]
+}
 
 function typeLabel(type: string) {
   switch (type) {

@@ -281,6 +281,30 @@ CREATE TABLE IF NOT EXISTS audit_log (
   KEY idx_time (create_time)
 ) COMMENT '操作审计日志';
 
+-- 9. 人工结论统一台账：把编辑/合并/匹配/数量分项修正集中登记，支持查看、撤销与来源追溯
+CREATE TABLE IF NOT EXISTS manual_conclusion (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  project_id BIGINT NOT NULL,
+  type VARCHAR(32) NOT NULL COMMENT 'DRAWING_EDIT/MERGE/MATCH/QUANTITY_FIX',
+  biz_key VARCHAR(600) NOT NULL COMMENT '业务唯一键：材料键/合并组/清单行/数量修正三元组',
+  ref1 VARCHAR(600) COMMENT '撤销用参数1：materialKey/groupKey/boqItemId/fileId',
+  ref2 VARCHAR(600) COMMENT '撤销用参数2：quantity fix 的 materialKey',
+  ref3 VARCHAR(600) COMMENT '撤销用参数3：quantity fix 的 partKey',
+  source_desc VARCHAR(512) COMMENT '来源描述：图纸文件/材料键/清单行',
+  summary VARCHAR(1024) COMMENT '结论摘要：改成了什么',
+  before_value TEXT COMMENT '变更前值，无法取得时为原始解析值说明',
+  after_value TEXT COMMENT '变更后值',
+  user_id BIGINT,
+  username VARCHAR(64),
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE/REVOKED',
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  revoke_by VARCHAR(64),
+  revoke_time DATETIME,
+  KEY idx_project_status (project_id, status),
+  KEY idx_project_type (project_id, type)
+) COMMENT '人工结论统一台账';
+
 -- ------------------------------------------------------------
 -- 已存在的库升级用（新建库无需执行，建表语句已包含这些列）：
 -- ALTER TABLE proj_project ADD COLUMN contract_no VARCHAR(64) COMMENT '合同编号' AFTER eng_type;

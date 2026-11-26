@@ -86,6 +86,13 @@
           @locate-boq="onLocate"
         />
       </el-tab-pane>
+      <el-tab-pane label="人工结论" name="manual-conclusions">
+        <ManualConclusionPanel
+          :project-id="numberId"
+          :refresh-key="dataVersion"
+          @changed="refreshOverview"
+        />
+      </el-tab-pane>
       <el-tab-pane :label="`疑点复核 (${overview?.issueTotal ?? 0})`" name="issues">
         <IssuePanel
           :project-id="numberId"
@@ -113,6 +120,7 @@ import FilePanel from './components/FilePanel.vue'
 import BoqPanel from './components/BoqPanel.vue'
 import ConstructionCablePanel from './components/ConstructionCablePanel.vue'
 import DrawingBoqPanel from './components/DrawingBoqPanel.vue'
+import ManualConclusionPanel from './components/ManualConclusionPanel.vue'
 import IssuePanel from './components/IssuePanel.vue'
 import ReportPanel from './components/ReportPanel.vue'
 

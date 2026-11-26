@@ -3,6 +3,7 @@ package com.zjlt.preaudit.module.project.controller;
 import com.zjlt.preaudit.common.api.R;
 import com.zjlt.preaudit.common.exception.BizException;
 import com.zjlt.preaudit.common.util.JsonUtil;
+import com.zjlt.preaudit.module.boq.service.ManualConclusionService;
 import com.zjlt.preaudit.module.project.dto.ProjectDtos;
 import com.zjlt.preaudit.module.project.service.ProjectFileService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -39,6 +40,7 @@ import java.util.Map;
 public class ProjectFileController {
 
     private final ProjectFileService fileService;
+    private final ManualConclusionService conclusions;
 
     @Operation(summary = "上传资料（清单 xlsx / 图纸 dxf、dwg）")
     @PostMapping("/projects/{projectId}/files")
@@ -97,6 +99,13 @@ public class ProjectFileController {
     public R<Void> saveQuantityFix(@PathVariable Long id,
                                    @Valid @RequestBody ProjectDtos.QuantityFixReq req) {
         fileService.saveQuantityFix(id, req.materialKey(), req.partKey(), req.value());
+        Long projectId = fileService.requireFile(id).getProjectId();
+        String bizKey = id + "|" + req.materialKey() + "|" + req.partKey();
+        conclusions.record(projectId, ManualConclusionService.QUANTITY_FIX, bizKey,
+                String.valueOf(id), req.materialKey(), req.partKey(),
+                "图纸文件 " + id + " / 材料 " + req.materialKey(),
+                "数量分项 " + req.partKey() + " 改为 " + req.value(),
+                "AI 原值或上一修正", String.valueOf(req.value()));
         return R.ok();
     }
 
@@ -106,6 +115,9 @@ public class ProjectFileController {
                                      @RequestParam String materialKey,
                                      @RequestParam String partKey) {
         fileService.deleteQuantityFix(id, materialKey, partKey);
+        Long projectId = fileService.requireFile(id).getProjectId();
+        conclusions.markRevoked(projectId, ManualConclusionService.QUANTITY_FIX,
+                id + "|" + materialKey + "|" + partKey);
         return R.ok();
     }
 

@@ -398,6 +398,13 @@ export const taskApi = {
   get: (id: number) => request.get<AsyncTaskVO>(`/tasks/${id}`),
 }
 
+export const manualConclusionApi = {
+  list: (projectId: number) =>
+    request.get<Record<string, any>[]>(`/projects/${projectId}/manual-conclusions`),
+  revoke: (projectId: number, id: number) =>
+    request.delete<void>(`/projects/${projectId}/manual-conclusions/${id}`),
+}
+
 export const issueApi = {
   page: (params: Record<string, unknown>) => request.get<PageResult<IssueVO>>('/issues', { params }),
   stats: (projectId?: number) =>

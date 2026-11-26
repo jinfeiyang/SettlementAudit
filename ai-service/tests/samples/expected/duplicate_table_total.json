@@ -1,0 +1,23 @@
+{
+  "tables": [
+    {
+      "columns": ["材料名称", "规格程式", "单位", "数 量"],
+      "rows": [
+        ["普通层绞式通信光缆", "GYTS-48B1", "米", "2979.9"]
+      ]
+    }
+  ],
+  "sheets": [
+    {
+      "sheet": "未归属图框",
+      "meters": 2979.9,
+      "segmentMeters": 2938.4,
+      "segmentParts": {"pipe": 2934.9, "bare": 3.5},
+      "segmentTotal": 2938.4,
+      "source": "table"
+    }
+  ],
+  "summary": [
+    {"name": "普通层绞式通信光缆", "spec": "GYTS-48B1", "unit": "米", "quantity": 2979.9}
+  ]
+}

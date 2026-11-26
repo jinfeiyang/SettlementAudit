@@ -285,3 +285,27 @@ ALTER TABLE boq_item ALTER COLUMN quantity DECIMAL(18,6);
 
 -- 疑点归因依据：已有库补列（清单行/定额/取费规则/判定口径）
 ALTER TABLE issue ADD COLUMN IF NOT EXISTS ai_references CLOB;
+
+-- 人工结论统一台账：集中登记编辑/合并/匹配/数量分项修正，支持查看、撤销与来源追溯
+CREATE TABLE IF NOT EXISTS manual_conclusion (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  type VARCHAR(32) NOT NULL,
+  biz_key VARCHAR(600) NOT NULL,
+  ref1 VARCHAR(600),
+  ref2 VARCHAR(600),
+  ref3 VARCHAR(600),
+  source_desc VARCHAR(512),
+  summary VARCHAR(1024),
+  before_value CLOB,
+  after_value CLOB,
+  user_id BIGINT,
+  username VARCHAR(64),
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  revoke_by VARCHAR(64),
+  revoke_time DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_mc_project_status ON manual_conclusion (project_id, status);
+CREATE INDEX IF NOT EXISTS idx_mc_project_type ON manual_conclusion (project_id, type);

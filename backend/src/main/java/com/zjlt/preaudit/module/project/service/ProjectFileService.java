@@ -3,18 +3,25 @@ package com.zjlt.preaudit.module.project.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.zjlt.preaudit.common.enums.Dict;
 import com.zjlt.preaudit.common.exception.BizException;
+import com.zjlt.preaudit.common.security.UserContext;
 import com.zjlt.preaudit.common.util.JsonUtil;
 import com.zjlt.preaudit.common.util.TextUtil;
 import com.zjlt.preaudit.module.ai.client.AiServiceClient;
 import com.zjlt.preaudit.module.boq.dto.BoqDtos;
 import com.zjlt.preaudit.module.boq.entity.BoqDrawingEdit;
 import com.zjlt.preaudit.module.boq.entity.BoqDrawingMerge;
+import com.zjlt.preaudit.module.boq.entity.ManualConclusion;
 import com.zjlt.preaudit.module.boq.mapper.BoqDrawingEditMapper;
 import com.zjlt.preaudit.module.boq.mapper.BoqDrawingMergeMapper;
+import com.zjlt.preaudit.module.boq.mapper.ManualConclusionMapper;
 import com.zjlt.preaudit.module.boq.service.BoqService;
+import com.zjlt.preaudit.module.issue.entity.Issue;
+import com.zjlt.preaudit.module.issue.mapper.IssueMapper;
 import com.zjlt.preaudit.module.project.dto.ProjectDtos;
 import com.zjlt.preaudit.module.project.entity.ProjectFile;
 import com.zjlt.preaudit.module.project.mapper.ProjectFileMapper;
+import com.zjlt.preaudit.module.report.entity.Report;
+import com.zjlt.preaudit.module.report.mapper.ReportMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -28,6 +35,8 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -48,6 +57,9 @@ public class ProjectFileService {
     private final BoqService boqService;
     private final BoqDrawingEditMapper drawingEditMapper;
     private final BoqDrawingMergeMapper drawingMergeMapper;
+    private final ManualConclusionMapper manualConclusionMapper;
+    private final IssueMapper issueMapper;
+    private final ReportMapper reportMapper;
     private final AiServiceClient aiClient;
 
     @Transactional
@@ -185,6 +197,34 @@ public class ProjectFileService {
                 .eq(BoqDrawingEdit::getProjectId, file.getProjectId()));
         drawingMergeMapper.delete(Wrappers.<BoqDrawingMerge>lambdaQuery()
                 .eq(BoqDrawingMerge::getProjectId, file.getProjectId()));
+        manualConclusionMapper.update(new ManualConclusion(), Wrappers.<ManualConclusion>lambdaUpdate()
+                .eq(ManualConclusion::getProjectId, file.getProjectId())
+                .eq(ManualConclusion::getStatus, "ACTIVE")
+                .set(ManualConclusion::getStatus, "REVOKED")
+                .set(ManualConclusion::getRevokeBy, UserContext.username())
+                .set(ManualConclusion::getRevokeTime, LocalDateTime.now()));
+
+        // 基础数据变了，旧的疑点/报告全部失效：清掉并回退到「已导入」，让用户重新核查、出报告。
+        long issueCount = issueMapper.selectCount(Wrappers.<Issue>lambdaQuery()
+                .eq(Issue::getProjectId, file.getProjectId()));
+        long reportCount = reportMapper.selectCount(Wrappers.<Report>lambdaQuery()
+                .eq(Report::getProjectId, file.getProjectId()));
+        if (issueCount > 0) {
+            issueMapper.delete(Wrappers.<Issue>lambdaQuery().eq(Issue::getProjectId, file.getProjectId()));
+        }
+        if (reportCount > 0) {
+            reportMapper.delete(Wrappers.<Report>lambdaQuery().eq(Report::getProjectId, file.getProjectId()));
+        }
+        String projectStatus = projectService.requireProject(file.getProjectId()).getStatus();
+        boolean downstreamInvalidated = issueCount > 0 || reportCount > 0
+                || (!Dict.PROJ_DRAFT.equals(projectStatus) && !Dict.PROJ_IMPORTED.equals(projectStatus));
+        if (downstreamInvalidated && !Dict.PROJ_DRAFT.equals(projectStatus)
+                && !Dict.PROJ_IMPORTED.equals(projectStatus)) {
+            projectService.transit(file.getProjectId(), Dict.PROJ_IMPORTED);
+        }
+        data.put("downstreamInvalidated", downstreamInvalidated);
+        data.put("invalidatedIssueCount", issueCount);
+        data.put("invalidatedReportCount", reportCount);
         updateStatus(file, Dict.PARSE_SUCCESS, null, message, JsonUtil.toJson(data));
         return data;
     }
@@ -236,6 +276,36 @@ public class ProjectFileService {
             data.put("manualQuantityFixes", fixes);
         }
         updateStatus(file, file.getParseStatus(), file.getParseRate(), file.getParseMessage(), JsonUtil.toJson(data));
+    }
+
+    /** 汇总项目下所有图纸的数量分项修正，供人工结论台账做历史补登。 */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> listQuantityFixes(Long projectId) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        List<ProjectFile> files = fileMapper.selectList(Wrappers.<ProjectFile>lambdaQuery()
+                .eq(ProjectFile::getProjectId, projectId)
+                .isNotNull(ProjectFile::getParseResult));
+        for (ProjectFile file : files) {
+            Object rawFixes = JsonUtil.toMap(file.getParseResult()).get("manualQuantityFixes");
+            if (!(rawFixes instanceof Map)) {
+                continue;
+            }
+            for (Map.Entry<String, Object> material : castMap(rawFixes).entrySet()) {
+                if (!(material.getValue() instanceof Map)) {
+                    continue;
+                }
+                for (Map.Entry<String, Object> part : castMap(material.getValue()).entrySet()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("fileId", file.getId());
+                    row.put("fileName", file.getFileName());
+                    row.put("materialKey", material.getKey());
+                    row.put("partKey", part.getKey());
+                    row.put("value", part.getValue());
+                    result.add(row);
+                }
+            }
+        }
+        return result;
     }
 
     @SuppressWarnings("unchecked")

@@ -130,10 +130,10 @@ public final class Dict {
     private static final Map<String, List<String>> TRANSITIONS = Map.of(
             PROJ_DRAFT, List.of(PROJ_IMPORTED, PROJ_DRAFT),
             PROJ_IMPORTED, List.of(PROJ_CHECKING, PROJ_IMPORTED, PROJ_DRAFT),
-            PROJ_CHECKING, List.of(PROJ_CHECKED, PROJ_CHECKING),
-            PROJ_CHECKED, List.of(PROJ_CHECKING, PROJ_REPORTED, PROJ_CHECKED),
-            PROJ_REPORTED, List.of(PROJ_ARCHIVED, PROJ_REPORTED, PROJ_CHECKING),
-            PROJ_ARCHIVED, List.of(PROJ_ARCHIVED));
+            PROJ_CHECKING, List.of(PROJ_CHECKED, PROJ_CHECKING, PROJ_IMPORTED),
+            PROJ_CHECKED, List.of(PROJ_CHECKING, PROJ_REPORTED, PROJ_CHECKED, PROJ_IMPORTED),
+            PROJ_REPORTED, List.of(PROJ_ARCHIVED, PROJ_REPORTED, PROJ_CHECKING, PROJ_IMPORTED),
+            PROJ_ARCHIVED, List.of(PROJ_ARCHIVED, PROJ_IMPORTED));
 
     public static String label(Map<String, String> dict, String key) {
         return key == null ? "" : dict.getOrDefault(key, key);
