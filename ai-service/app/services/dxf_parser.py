@@ -2065,6 +2065,25 @@ def parse_dxf_bytes(data: bytes, filename: str, sample_limit: int = 300,
     materials = extract_material_tables(doc, table_hits, frames)
     materials = _apply_material_edits(materials, material_edits or [])
 
+    # 材料表文字在块定义里，模型空间扫描（TEXT/MTEXT + 块属性）收不到；
+    # 搜索和复制模式依赖 textLabels，这里把表格单元格按模型空间坐标补进去，
+    # 按「文字+坐标」去重，避免同一处文字在搜索结果里出现两次。
+    seen_labels = {(label["text"], label["x"], label["y"]) for label in text_labels}
+    for table in materials:
+        for cell in table.get("cells") or []:
+            try:
+                text = clean_annotation(str(cell.get("text") or ""))[:200]
+                x = round(float(cell.get("x", 0)), 3)
+                y = round(float(cell.get("y", 0)), 3)
+            except (TypeError, ValueError):  # noqa: PERF203 单元格脏数据直接跳过
+                continue
+            key = (text, x, y)
+            if not text or key in seen_labels or len(text_labels) >= text_label_limit:
+                continue
+            seen_labels.add(key)
+            text_labels.append({"text": text, "x": x, "y": y,
+                                "layer": table.get("block") or "材料表"})
+
     # 给文字标注补上图框/张号/图名和该页范围：施工光缆段落名据此回查「画在哪一页」并跳转定位。
     frames_by_no = {frame["no"]: frame for frame in frames}
     text_label_output: list[dict[str, Any]] = []

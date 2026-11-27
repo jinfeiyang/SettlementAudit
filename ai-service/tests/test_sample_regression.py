@@ -53,6 +53,18 @@ class SampleRegressionTest(unittest.TestCase):
                     )
                     self.assertTrue(hit, f'{sample.name} 表格未按预期归列：{want}')
 
+                # 表格文字在块定义里，搜索/复制模式依赖 textLabels，必须一并索引
+                label_positions = {
+                    (label.get('text'), label.get('x'), label.get('y'))
+                    for label in result.get('textLabels') or []
+                }
+                for table in actual_tables:
+                    for cell in table.get('cells') or []:
+                        self.assertIn(
+                            (cell['text'], cell['x'], cell['y']), label_positions,
+                            f'{sample.name} 表格单元格未进入文字索引：{cell["text"]}',
+                        )
+
                 actual_sheets = (result.get('measure') or {}).get('annotationBySheet') or []
                 for want in expected.get('sheets', []):
                     item = find_sheet(actual_sheets, want['sheet'])

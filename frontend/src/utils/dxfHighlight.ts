@@ -38,6 +38,18 @@ interface DxfText {
   end: number
 }
 
+type Point = { x: number; y: number }
+
+interface InsertRef {
+  parent: number
+  target: string
+  x: number
+  y: number
+  sx: number
+  sy: number
+  rot: number
+}
+
 export function highlightDxfText(
   buffer: ArrayBuffer,
   needle: string,
@@ -101,58 +113,112 @@ export function highlightDxfText(
     }
     return 0
   }
+  const valueAt = (entityEnd: number, begin: number, code: string) => {
+    for (let k = begin; k + 1 < entityEnd; k += 2) {
+      if (codeOf(k) === code) {
+        return textOf(k + 1)
+      }
+    }
+    return ''
+  }
+  const numberOr = (entityEnd: number, begin: number, code: string, fallback: number) => {
+    const value = Number.parseFloat(valueAt(entityEnd, begin, code))
+    return Number.isFinite(value) ? value : fallback
+  }
+
+  /** 逐实体遍历；回调拿到的 container 是该实体所在的块/段编号 */
+  const forEachEntity = (visit: (type: string, begin: number, end: number, container: number) => void) => {
+    let container = 0
+    let i = 0
+    while (i + 1 < count) {
+      if (codeOf(i) !== '0') {
+        i += 2
+        continue
+      }
+      const type = textOf(i + 1).toUpperCase()
+      let end = i + 2
+      while (end + 1 < count && codeOf(end) !== '0') {
+        end += 2
+      }
+      visit(type, i, end, container)
+      if (type === 'SECTION' || type === 'ENDSEC' || type === 'BLOCK' || type === 'ENDBLK') {
+        container += 1
+      }
+      i = end
+    }
+  }
+
+  /** 容器号 → 块名：BLOCKS 段里 TEXT 的坐标是块局部坐标，要经 INSERT 换算到模型空间 */
+  const blockNameByContainer = new Map<number, string>()
+  /** 块名 → 所有 INSERT 引用：同一表格块可能在不同图页各插一份 */
+  const insertsByName = new Map<string, InsertRef[]>()
+  // DXF 里 BLOCKS 段先于 ENTITIES 段，必须先扫一遍 INSERT 才能换算块内文字坐标
+  forEachEntity((type, begin, end, container) => {
+    if (type === 'BLOCK') {
+      const name = valueAt(end, begin + 2, '2')
+      if (name) {
+        blockNameByContainer.set(container + 1, name)
+      }
+    } else if (type === 'INSERT') {
+      const target = valueAt(end, begin + 2, '2')
+      if (target) {
+        const list = insertsByName.get(target) ?? []
+        list.push({
+          parent: container,
+          target,
+          x: numberOr(end, begin + 2, '10', 0),
+          y: numberOr(end, begin + 2, '20', 0),
+          sx: numberOr(end, begin + 2, '41', 1),
+          sy: numberOr(end, begin + 2, '42', 1),
+          rot: numberOr(end, begin + 2, '50', 0),
+        })
+        insertsByName.set(target, list)
+      }
+    }
+  })
 
   const entities: DxfText[] = []
-  let container = 0
-  let i = 0
-  while (i + 1 < count) {
-    if (codeOf(i) !== '0') {
-      i += 2
-      continue
+  forEachEntity((type, begin, end, container) => {
+    if (type !== 'TEXT' && type !== 'MTEXT') {
+      return
     }
-    const type = textOf(i + 1).toUpperCase()
-    let end = i + 2
-    while (end + 1 < count && codeOf(end) !== '0') {
-      end += 2
-    }
-    if (type === 'SECTION' || type === 'ENDSEC' || type === 'BLOCK' || type === 'ENDBLK') {
-      container += 1
-    } else if (type === 'TEXT' || type === 'MTEXT') {
-      let valueIndex = -1
-      let colorIndex = -1
-      let chunks = ''
-      for (let k = i + 2; k + 1 < end; k += 2) {
-        const code = codeOf(k)
-        if (code === '3' && type === 'MTEXT') {
-          chunks += textOf(k + 1)
-        } else if (code === '1' && valueIndex < 0) {
-          valueIndex = k + 1
-        } else if (code === '62') {
-          colorIndex = k + 1
-        }
-      }
-      if (valueIndex >= 0) {
-        const y = numberAt(end, i + 2, '20')
-        const x = numberAt(end, i + 2, '10')
-        // 分幅图各页都印一份材料表，行 y 完全相同；不先按页框过滤，
-        // 归行会把不同页的「光缆」和别的页规格并到一行，越标越多。
-        if (!inScope(x, y)) {
-          i = end
-          continue
-        }
-        entities.push({
-          text: normalize(cleanMText(chunks + textOf(valueIndex))),
-          x,
-          y,
-          container,
-          valueIndex,
-          colorIndex,
-          end,
-        })
+    let valueIndex = -1
+    let colorIndex = -1
+    let chunks = ''
+    for (let k = begin + 2; k + 1 < end; k += 2) {
+      const code = codeOf(k)
+      if (code === '3' && type === 'MTEXT') {
+        chunks += textOf(k + 1)
+      } else if (code === '1' && valueIndex < 0) {
+        valueIndex = k + 1
+      } else if (code === '62') {
+        colorIndex = k + 1
       }
     }
-    i = end
-  }
+    if (valueIndex < 0) {
+      return
+    }
+    const y = numberAt(end, begin + 2, '20')
+    const x = numberAt(end, begin + 2, '10')
+    // 块里的文字是块局部坐标，先按 INSERT（可嵌套）换算到模型空间再按页框过滤，
+    // 否则材料表文字永远落在页框外，标红会整片消失。
+    const points = modelPointsOf(
+      { x, y }, blockNameByContainer.get(container), blockNameByContainer, insertsByName,
+    )
+    if (!points.some((point) => inScope(point.x, point.y))) {
+      return
+    }
+    const anchor = points[0] ?? { x, y }
+    entities.push({
+      text: normalize(cleanMText(chunks + textOf(valueIndex))),
+      x: anchor.x,
+      y: anchor.y,
+      container,
+      valueIndex,
+      colorIndex,
+      end,
+    })
+  })
 
   // 同一容器内按 y 归行：表格一行的名称/规格是同一基线上的两个文字
   const rows = new Map<number, Array<{ y: number; items: DxfText[] }>>()
@@ -249,6 +315,54 @@ export function highlightDxfText(
     }
   }
   return output.buffer
+}
+
+/** INSERT 的缩放 → 旋转 → 平移，和 DXF 的块引用变换一致 */
+function transformInsert(ref: InsertRef, point: Point): Point {
+  const sx = ref.sx || 1
+  const sy = ref.sy || 1
+  const angle = ref.rot * Math.PI / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  const px = point.x * sx
+  const py = point.y * sy
+  return { x: ref.x + px * cos - py * sin, y: ref.y + px * sin + py * cos }
+}
+
+/**
+ * 块内文字坐标 → 模型空间坐标。一个块可能被多处 INSERT，也可能嵌在别的块里，
+ * 所以沿 INSERT 链递归展开；返回所有落点用于页框过滤。
+ */
+function modelPointsOf(
+  local: Point,
+  blockName: string | undefined,
+  blockNameByContainer: Map<number, string>,
+  insertsByName: Map<string, InsertRef[]>,
+): Point[] {
+  if (!blockName) {
+    return [local]
+  }
+  const walk = (name: string, points: Point[], seen: Set<string>): Point[] => {
+    if (seen.has(name)) {
+      return points
+    }
+    const refs = insertsByName.get(name) ?? []
+    if (!refs.length) {
+      return points
+    }
+    const nextSeen = new Set(seen).add(name)
+    const out: Point[] = []
+    for (const ref of refs) {
+      const moved = points.map((point) => transformInsert(ref, point))
+      const parent = blockNameByContainer.get(ref.parent)
+      out.push(...(parent ? walk(parent, moved, nextSeen) : moved))
+      if (out.length > 4000) {
+        break
+      }
+    }
+    return out
+  }
+  return walk(blockName, [local], new Set())
 }
 
 function isBlank(byte: number) {

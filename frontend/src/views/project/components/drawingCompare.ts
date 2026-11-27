@@ -49,6 +49,8 @@ export interface FormulaPart {
   text: string
   /** 该分项对应的图纸页；旧数据或表号找不到图框时为空，此时只显示数值 */
   source?: DrawingSource
+  /** 同一个张号可能印在多张分幅图上，分项聚合后会有多处来源 */
+  sources?: DrawingSource[]
   /** 该分项是否被人工修正过，界面可据此提示并提供恢复入口 */
   fixed?: boolean
 }
@@ -67,6 +69,7 @@ const fmtQty = (value: number) =>
  */
 export function quantityFormulaData(material?: {
   quantityParts?: Record<string, number>
+  quantityPartSources?: Record<string, DrawingSource[]>
   quantity?: number
   unit?: string
   sources?: DrawingSource[]
@@ -77,16 +80,24 @@ export function quantityFormulaData(material?: {
   }
   const sources = material?.sources ?? []
   const parts: FormulaPart[] = entries.map(([label, value]) => {
-    const sheet = /^第\s*(.+?)\s*张$/.exec(label)?.[1]
+    const pageNo = /^第\s*(.+?)\s*张$/.exec(label)?.[1]
     const tableNo = /^表\s*(\d+)$/.exec(label)?.[1]
-    const source = sources.find((item) =>
-      (sheet != null && (String(item.sheet) === sheet || String(item.frame) === sheet)) ||
-      (tableNo != null && item.tables.includes(Number(tableNo))),
+    // 分项来源是汇总时记下来的图框，先用它；老数据没有时才按标签兜底。
+    // 分项现在按图框拆，所以先认 frame；只有历史数据用印刷张号时才退到 sheet。
+    const linked = material?.quantityPartSources?.[label] ?? []
+    const frameMatches = pageNo != null ? sources.filter((item) => String(item.frame) === pageNo) : []
+    const sheetMatches = pageNo != null ? sources.filter((item) => String(item.sheet) === pageNo) : []
+    const fallback = frameMatches[0] ?? sheetMatches[0] ?? sources.find((item) =>
+      tableNo != null && item.tables.includes(Number(tableNo)),
     )
+    const partSources = linked.length ? linked : fallback ? [fallback] : []
     return {
       label,
       text: fmtQty(value),
-      ...(source ? { source } : {}),
+      ...(partSources.length ? {
+        source: partSources[0],
+        ...(partSources.length > 1 ? { sources: partSources } : {}),
+      } : {}),
       ...(fixedKeys && label in fixedKeys ? { fixed: true } : {}),
     }
   })
@@ -133,8 +144,25 @@ export function applyQuantityFixes(materials: DrawingMaterial[], fixes: Quantity
       continue
     }
     for (const [partKey, value] of Object.entries(partFixes)) {
-      if (partKey in material.quantityParts && Number.isFinite(value)) {
+      if (!Number.isFinite(value)) {
+        continue
+      }
+      if (partKey in material.quantityParts) {
         material.quantityParts[partKey] = value
+        continue
+      }
+      // 历史修正按印刷张号存；现在分项按图框拆。一个印刷张号可能对应多张分幅图，
+      // 一个修正值无法拆给多页，只有唯一对应时才迁移，避免重复计数。
+      const oldSheet = /^第\s*(.+?)\s*张$/.exec(partKey)?.[1]
+      if (oldSheet == null) {
+        continue
+      }
+      const keys = material.sources
+        .filter((src) => String(src.sheet) === oldSheet)
+        .map((src) => `第 ${src.frame} 张`)
+        .filter((key) => key in material.quantityParts)
+      if (keys.length === 1) {
+        material.quantityParts[keys[0]] = value
       }
     }
     material.quantity = round(
@@ -181,6 +209,8 @@ export interface DrawingMaterial {
   quantity: number
   /** 图纸上这条材料的数量计算式分项，如「第2张 100 + 第4张 200」 */
   quantityParts: Record<string, number>
+  /** 分项 → 实际图页来源；图纸张号可能重复，不能只靠分项文字猜 */
+  quantityPartSources?: Record<string, DrawingSource[]>
   fileCount: number
   files: string[]
   /** 出现在哪几张图上，按图纸顺序 */
@@ -409,13 +439,25 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
       // 同物异名（新立光交 / 新建光缆交接箱）合成一行，否则同一件器材会被拆成 1+1
       const key = `${canonicalName(name)}|${normalizeText(spec)}|${normalizeUnit(unit)}`
       const sources = sourcesOf(item.tables, tablesByNo, framesByNo, fileId, fileName)
-      // 数量分项：表号映射到所在张号，显示成「第 N 张 数量 + … = 合计」
+      // 数量分项按图框拆，不按印刷张号：同一张号可能印在多张分幅图上，
+      // 张号相同但数量不同，合并成一个分项会看不出 8/9/10 张各自的量。
       const parts: Record<string, number> = {}
+      // 同时记下每个分项真正来自哪张图框，点击数值时直接用，不靠文字反猜
+      const partSources: Record<string, DrawingSource[]> = {}
       Object.entries(item.quantityParts ?? {}).forEach(([tableNo, value]) => {
         const table = tablesByNo.get(Number(tableNo))
-        const sheet = table?.frameSheet
-        const partKey = sheet ? `第 ${sheet} 张` : `表 ${tableNo}`
+        const frameNo = table?.frame
+        const partKey = frameNo != null ? `第 ${frameNo} 张`
+          : table?.frameSheet ? `第 ${table.frameSheet} 张` : `表 ${tableNo}`
         parts[partKey] = round((parts[partKey] ?? 0) + Number(value))
+        const source = sources.find((src) => src.frame === table?.frame)
+        if (source) {
+          const list = partSources[partKey] ?? []
+          if (!list.some((old) => old.fileId === source.fileId && old.frame === source.frame)) {
+            list.push(source)
+          }
+          partSources[partKey] = list
+        }
       })
       // 没有逐表分项就不造「数量 = 合计」的占位项——那不是分页相加公式，
       // 会在图纸定位弹窗里显示成误导性的「数量 6 = 6处」。无分项时留空，不显示公式。
@@ -429,6 +471,7 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
         Object.entries(parts).forEach(([partKey, value]) => {
           hit.quantityParts[partKey] = round((hit.quantityParts[partKey] ?? 0) + value)
         })
+        mergePartSources(hit.quantityPartSources ?? (hit.quantityPartSources = {}), partSources)
         if (!hit.files.includes(fileName)) {
           hit.files.push(fileName)
           hit.fileCount = hit.files.length
@@ -443,6 +486,7 @@ export function mergeDrawingMaterials(results: DrawingParseResult[]): DrawingMat
         unit,
         quantity: round(quantity),
         quantityParts: parts,
+        quantityPartSources: partSources,
         fileCount: 1,
         files: [fileName],
         sources,
@@ -552,6 +596,9 @@ export function applyMaterialMerges(
         key: group.groupKey,
         name: group.displayName?.trim() || material.name,
         quantityParts: { ...material.quantityParts },
+        quantityPartSources: Object.fromEntries(
+          Object.entries(material.quantityPartSources ?? {}).map(([label, list]) => [label, [...list]]),
+        ),
         files: [...material.files],
         sources: [...material.sources],
         aliases: [material.name],
@@ -571,6 +618,7 @@ export function applyMaterialMerges(
     Object.entries(material.quantityParts).forEach(([label, value]) => {
       exist.quantityParts[label] = round((exist.quantityParts[label] ?? 0) + value)
     })
+    mergePartSources(exist.quantityPartSources ?? (exist.quantityPartSources = {}), material.quantityPartSources)
     material.files.forEach((file) => {
       if (!exist.files.includes(file)) {
         exist.files.push(file)
@@ -674,6 +722,18 @@ function mergeSources(target: DrawingSource[], incoming: DrawingSource[]) {
       }
     })
     exist.tableBox = unionBounds(exist.tableBox, source.tableBox)
+  })
+}
+
+/** 数量分项来源按标签合并，同一图页只留一份 */
+function mergePartSources(
+  target: Record<string, DrawingSource[]>,
+  incoming?: Record<string, DrawingSource[]>,
+) {
+  Object.entries(incoming ?? {}).forEach(([label, list]) => {
+    const exist = target[label] ?? []
+    mergeSources(exist, list)
+    target[label] = exist
   })
 }
 

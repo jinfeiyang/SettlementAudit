@@ -362,10 +362,11 @@ let activeSearchLabels: DrawingTextLabel[] = []
 let searchSeq = 0
 
 function pageTextOf(label: DrawingTextLabel): string {
+  // 图框序号与图签图号是两套编号，写成「第 6 张（图号 5）」避免和表内行号混淆
   if (label.frame == null) {
-    return '图框外'
+    return label.sheet ? `图框外 · 图号 ${label.sheet}` : '图框外'
   }
-  return `第 ${label.frame} 张${label.sheet ? ` · ${label.sheet}` : ''}`
+  return `第 ${label.frame} 张${label.sheet ? `（图号 ${label.sheet}）` : ''}`
 }
 
 async function runSearch(keyword: string) {

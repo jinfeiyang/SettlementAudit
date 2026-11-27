@@ -55,11 +55,33 @@
                 class="formula-input"
                 :title="`${part.label} 数量`"
               />
+              <el-popover
+                v-else-if="partSourcesOf(part).length > 1"
+                placement="bottom"
+                :width="320"
+                :hide-after="0"
+                trigger="click"
+              >
+                <template #reference>
+                  <el-button
+                    link
+                    class="formula-part"
+                    :type="partActive(part) ? 'danger' : 'primary'"
+                    :title="`${part.label} · 点击选择具体图页`"
+                  >{{ part.text }}</el-button>
+                </template>
+                <div v-for="src in partSourcesOf(part)" :key="`${src.fileId}-${src.frame}`" class="src-row">
+                  <el-button link type="primary" size="small" @click="open(src)">
+                    {{ sourceLabel(src) }}
+                  </el-button>
+                  <span class="src-file">{{ src.title || src.fileName }}</span>
+                </div>
+              </el-popover>
               <el-button
                 v-else-if="part.source"
                 link
                 class="formula-part"
-                :type="isActiveSource(part.source) ? 'danger' : 'primary'"
+                :type="partActive(part) ? 'danger' : 'primary'"
                 :title="`${part.label} · 点击定位到该页`"
                 @click="open(part.source)"
               >{{ part.text }}</el-button>
@@ -317,6 +339,18 @@ function isActiveSource(src: DrawingSource) {
     return src.frame === activePage.value
   }
   return isCurrent(src)
+}
+
+/** 数量公式的一个分项可能横跨多张分幅图，打开时让用户选具体图页 */
+function partSourcesOf(part: { source?: DrawingSource; sources?: DrawingSource[] }): DrawingSource[] {
+  if (part.sources?.length) {
+    return part.sources
+  }
+  return part.source ? [part.source] : []
+}
+
+function partActive(part: { source?: DrawingSource; sources?: DrawingSource[] }) {
+  return partSourcesOf(part).some((src) => isActiveSource(src))
 }
 
 const relatedSources = computed(() => props.sources)

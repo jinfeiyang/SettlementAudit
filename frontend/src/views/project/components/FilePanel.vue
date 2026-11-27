@@ -7,13 +7,13 @@
       <el-button @click="boqApi.template(projectId)">下载清单模板</el-button>
       <el-button @click="load">刷新</el-button>
       <span class="hint">
-        上传后自动解析：清单 Excel → 结构化清单行（含行号）；DXF/DWG → 线路长度与设备数量量算（依赖 AI 服务）
+        上传后自动解析：清单 Excel → 结构化清单行（含行号）；DXF/DWG → 线路长度与设备数量量算
       </span>
     </div>
 
     <h4 class="section">清单文件（Excel）</h4>
-    <el-table v-loading="loading" :data="boqFiles" empty-text="暂无清单文件，请输入工程量清单 Excel">
-      <el-table-column prop="fileName" label="文件名" min-width="240" show-overflow-tooltip />
+    <el-table v-loading="loading" :data="boqFiles" empty-text="暂无清单文件，请输入工程量清单 Excel" class="file-table">
+      <el-table-column prop="fileName" label="文件名" min-width="240" class-name="wrap-cell" />
       <el-table-column label="类型" width="110">
         <template #default="{ row }">{{ typeLabel(row.fileType) }}</template>
       </el-table-column>
@@ -28,7 +28,7 @@
       <el-table-column label="可解析率" width="100" align="right">
         <template #default="{ row }">{{ row.parseRate === undefined || row.parseRate === null ? '-' : percent(row.parseRate) }}</template>
       </el-table-column>
-      <el-table-column prop="parseMessage" label="导入摘要" min-width="280" show-overflow-tooltip />
+      <el-table-column prop="parseMessage" label="导入摘要" min-width="280" class-name="wrap-cell" />
       <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="showBoqResult(row)">导入结果</el-button>
@@ -40,8 +40,8 @@
     </el-table>
 
     <h4 class="section">图纸文件（DXF / DWG）</h4>
-    <el-table v-loading="loading" :data="drawingFiles" empty-text="暂无图纸文件，请上传竣工图 DXF/DWG">
-      <el-table-column prop="fileName" label="文件名" min-width="240" show-overflow-tooltip />
+    <el-table v-loading="loading" :data="drawingFiles" empty-text="暂无图纸文件，请上传竣工图 DXF/DWG" class="file-table">
+      <el-table-column prop="fileName" label="文件名" min-width="240" class-name="wrap-cell" />
       <el-table-column label="类型" width="110">
         <template #default="{ row }">{{ typeLabel(row.fileType) }}</template>
       </el-table-column>
@@ -53,7 +53,7 @@
           <el-tag :type="statusTag(row.parseStatus)" size="small">{{ row.parseStatusName }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="parseMessage" label="解析提示" min-width="280" show-overflow-tooltip />
+      <el-table-column prop="parseMessage" label="解析提示" min-width="280" class-name="wrap-cell" />
       <el-table-column label="操作" width="330" fixed="right">
         <template #default="{ row }">
           <el-button v-if="isDrawingFile(row)" link type="primary" @click="openDrawing(row)">查看图纸</el-button>
@@ -729,6 +729,12 @@ onBeforeUnmount(stopPoll)
 .hint {
   color: #909399;
   font-size: 12px;
+}
+/* 资料列表：文件名和解析提示较长，换行完整展示 */
+:deep(.file-table .wrap-cell .cell) {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.45;
 }
 .summary-table {
   width: 100%;
